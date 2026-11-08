@@ -6,7 +6,11 @@ pub fn parse(iso: &str) -> Option<f64> {
     let b = iso.as_bytes();
     let num = |from: usize, len: usize| -> Option<i64> { iso.get(from..from + len)?.parse().ok() };
     let (y, mo, d) = (num(0, 4)?, num(5, 2)?, num(8, 2)?);
-    let (h, mi, s) = if b.len() >= 19 { (num(11, 2)?, num(14, 2)?, num(17, 2)?) } else { (0, 0, 0) };
+    let (h, mi, s) = if b.len() >= 19 {
+        (num(11, 2)?, num(14, 2)?, num(17, 2)?)
+    } else {
+        (0, 0, 0)
+    };
     let mut i = 19;
     let mut frac = 0.0;
     if b.get(i) == Some(&b'.') {
@@ -50,7 +54,9 @@ fn local(ms: f64) -> (i64, i32, i32, i64) {
     (day, tm.tm_mon, tm.tm_mday, tm.tm_gmtoff)
 }
 
-const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 /// Days since the epoch on the local calendar.
 pub fn day(ms: f64) -> i64 {
@@ -58,12 +64,17 @@ pub fn day(ms: f64) -> i64 {
 }
 
 pub fn now_ms() -> f64 {
-    std::time::UNIX_EPOCH.elapsed().map(|d| d.as_millis() as f64).unwrap_or(0.0)
+    std::time::UNIX_EPOCH
+        .elapsed()
+        .map(|d| d.as_millis() as f64)
+        .unwrap_or(0.0)
 }
 
 /// "now", "5m", "3h", "2d", then "Nov 7".
 pub fn ago(iso: &str, now: f64) -> String {
-    let Some(at) = parse(iso) else { return String::new() };
+    let Some(at) = parse(iso) else {
+        return String::new();
+    };
     let seconds = ((now - at) / 1000.0).round().max(0.0);
     if seconds < 45.0 {
         return "now".into();
@@ -126,7 +137,12 @@ pub fn iso(ms: f64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z", rem / 3600, rem % 3600 / 60, rem % 60)
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
 }
 
 #[cfg(test)]
@@ -136,7 +152,10 @@ mod tests {
     #[test]
     fn times_read_as_the_web_writes_them() {
         assert_eq!(parse("1970-01-01T00:00:01.500Z"), Some(1500.0));
-        assert_eq!(parse("2026-11-07T10:00:00+01:00"), parse("2026-11-07T09:00:00Z"));
+        assert_eq!(
+            parse("2026-11-07T10:00:00+01:00"),
+            parse("2026-11-07T09:00:00Z")
+        );
         let now = parse("2026-11-07T12:00:00Z").unwrap();
         assert_eq!(iso(now), "2026-11-07T12:00:00.000Z");
         assert_eq!(ago("2026-11-07T11:59:30Z", now), "now");

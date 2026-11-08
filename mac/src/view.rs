@@ -4,7 +4,10 @@
 
 use rune::{Cx, El, TextStyle, col, el, icon, row, text, text_input};
 
-use crate::api::{Authority, Change, Conversation, Display, Identity, Item, Origin, PlanStep, Progress, Session, Stop, Tool, Turn, TurnState};
+use crate::api::{
+    Authority, Change, Conversation, Display, Identity, Item, Origin, PlanStep, Progress, Session,
+    Stop, Tool, Turn, TurnState,
+};
 use crate::live::Link;
 use crate::servers::Server;
 use crate::theme::{self, BODY, COMPOSER, META, META_STRONG, Palette, RADIUS, SMALL, icons};
@@ -25,13 +28,25 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     if s.auth != Auth::Ready {
         return sign_in(s, server, cx.titlebar_inset(), k, &p);
     }
-    let md = if dark { &s.markdown_dark } else { &s.markdown_light };
+    let md = if dark {
+        &s.markdown_dark
+    } else {
+        &s.markdown_light
+    };
     let mut layer = Vec::new();
     let page = match s.conn() {
         Some(conn) => session::page(s, conn, k, md, &p, &mut layer),
         None => crate::home::page(s, k, &p, &mut layer),
     };
-    let main = col().key("main").grow(1.0).shrink().min_w(0.0).h_full().fill(p.bg).child(shell::tab_bar(s, cx, k, &p, &mut layer)).child(page);
+    let main = col()
+        .key("main")
+        .grow(1.0)
+        .shrink()
+        .min_w(0.0)
+        .h_full()
+        .fill(p.bg)
+        .child(shell::tab_bar(s, cx, k, &p, &mut layer))
+        .child(page);
     let mut window = row().w_full().h_full().fill(p.bg);
     if s.sidebar {
         window = window.child(shell::sidebar(s, cx, k, &p, &mut layer));
@@ -61,7 +76,24 @@ fn connect(s: &State, inset: f32, p: &Palette) -> El {
                 .fill(p.raised)
                 .hover(p.hover)
                 .child(icon(&icons::MARK, 22.0))
-                .child(col().grow(1.0).shrink().min_w(0.0).child(text(server.name.clone()).font(theme::TITLE).color(p.ink).max_lines(1)).child(text(server.url.clone()).font(META).color(p.quiet).max_lines(1)))
+                .child(
+                    col()
+                        .grow(1.0)
+                        .shrink()
+                        .min_w(0.0)
+                        .child(
+                            text(server.name.clone())
+                                .font(theme::TITLE)
+                                .color(p.ink)
+                                .max_lines(1),
+                        )
+                        .child(
+                            text(server.url.clone())
+                                .font(META)
+                                .color(p.quiet)
+                                .max_lines(1),
+                        ),
+                )
                 .child(text("Open").font(META_STRONG).color(p.muted))
                 .on_press(move |s: &mut State| s.open(open.clone())),
         );
@@ -107,24 +139,46 @@ fn connect(s: &State, inset: f32, p: &Palette) -> El {
         .child(text("Open your Scotty").font(TextStyle::new(22.0, 600.0).lh(28.0)).color(p.ink))
         .child(text("Type the address of your Scotty. You'll sign in through its Cloudflare Access in your browser.").font(META).color(p.muted).wrap());
     if !s.servers.is_empty() {
-        card = card.child(list).child(text("Or another Scotty").font(META).color(p.quiet));
+        card = card
+            .child(list)
+            .child(text("Or another Scotty").font(META).color(p.quiet));
     }
     card = card.child(field);
     if let Some(why) = &s.address_error {
-        card = card.child(row().gap(6.0).center_y().child(icon(&icons::ALERT, 13.0).color(p.danger)).child(text(why.clone()).font(META).color(p.danger).wrap()));
+        card = card.child(
+            row()
+                .gap(6.0)
+                .center_y()
+                .child(icon(&icons::ALERT, 13.0).color(p.danger))
+                .child(text(why.clone()).font(META).color(p.danger).wrap()),
+        );
     }
     col()
         .w_full()
         .h_full()
         .fill(p.bg)
         .child(row().w_full().h(52.0).pl(12.0 + inset).window_drag())
-        .child(row().w_full().grow(1.0).justify_center().center_y().px(24.0).pb(52.0).child(card))
+        .child(
+            row()
+                .w_full()
+                .grow(1.0)
+                .justify_center()
+                .center_y()
+                .px(24.0)
+                .pb(52.0)
+                .child(card),
+        )
 }
 
 /// A Scotty behind Cloudflare Access with no good token: one button signs in through the browser,
 /// and the window carries on (list, tabs, sockets) once the token comes back.
 fn sign_in(s: &State, server: &Server, inset: f32, k: &rune_kit::Kit, p: &Palette) -> El {
-    let host = server.url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/').to_string();
+    let host = server
+        .url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_string();
     let primary = |key: &str, label: &str| {
         row()
             .key(key)
@@ -137,13 +191,28 @@ fn sign_in(s: &State, server: &Server, inset: f32, k: &rune_kit::Kit, p: &Palett
             .center_y()
             .radius(RADIUS)
             .fill(p.button)
-            .child(text(label.to_string()).font(META_STRONG).color(p.button_ink))
+            .child(
+                text(label.to_string())
+                    .font(META_STRONG)
+                    .color(p.button_ink),
+            )
             .child(icon(&icons::EXTERNAL, 14.0).color(p.button_ink))
     };
-    let quiet = |key: &str, label: &str| el().key(key).role("button").label(label).px(10.0).py(6.0).radius(8.0).hover(p.hover).child(text(label.to_string()).font(META_STRONG).color(p.muted));
+    let quiet = |key: &str, label: &str| {
+        el().key(key)
+            .role("button")
+            .label(label)
+            .px(10.0)
+            .py(6.0)
+            .radius(8.0)
+            .hover(p.hover)
+            .child(text(label.to_string()).font(META_STRONG).color(p.muted))
+    };
     let lead = match &s.auth {
         Auth::Failed(_) => "Signing in didn't finish. Try again; your browser opens the same page.",
-        _ => "This Scotty is behind Cloudflare Access. Sign in with your browser, and the app carries on here.",
+        _ => {
+            "This Scotty is behind Cloudflare Access. Sign in with your browser, and the app carries on here."
+        }
     };
     let mut card = col()
         .key("sign-in-card")
@@ -151,7 +220,17 @@ fn sign_in(s: &State, server: &Server, inset: f32, k: &rune_kit::Kit, p: &Palett
         .max_w(400.0)
         .gap(16.0)
         .child(icon(&icons::MARK, 36.0))
-        .child(col().w_full().gap(6.0).child(text("Sign in to Scotty").font(TextStyle::new(22.0, 600.0).lh(28.0)).color(p.ink)).child(text(host).font(META).color(p.quiet).max_lines(1)))
+        .child(
+            col()
+                .w_full()
+                .gap(6.0)
+                .child(
+                    text("Sign in to Scotty")
+                        .font(TextStyle::new(22.0, 600.0).lh(28.0))
+                        .color(p.ink),
+                )
+                .child(text(host).font(META).color(p.quiet).max_lines(1)),
+        )
         .child(text(lead).font(META).color(p.muted).wrap());
     match &s.auth {
         Auth::Waiting(opened) => {
@@ -159,7 +238,8 @@ fn sign_in(s: &State, server: &Server, inset: f32, k: &rune_kit::Kit, p: &Palett
                 .key("sign-in-waiting")
                 .role("status")
                 .w_full()
-                .px(16.0).py(14.0)
+                .px(16.0)
+                .py(14.0)
                 .gap(12.0)
                 .radius(RADIUS)
                 .fill(p.raised)
@@ -169,38 +249,76 @@ fn sign_in(s: &State, server: &Server, inset: f32, k: &rune_kit::Kit, p: &Palett
                         .gap(10.0)
                         .center_y()
                         .child(shell::spinner(13.0, p.muted, k))
-                        .child(text(if opened.is_some() { "Finish signing in in your browser…" } else { "Opening your browser…" }).font(META_STRONG).color(p.ink)),
+                        .child(
+                            text(if opened.is_some() {
+                                "Finish signing in in your browser…"
+                            } else {
+                                "Opening your browser…"
+                            })
+                            .font(META_STRONG)
+                            .color(p.ink),
+                        ),
                 );
             let mut actions = row().gap(4.0).center_y().ml(-10.0);
             if opened.is_some() {
-                actions = actions.child(quiet("sign-in-reopen", "Open the page again").on_press(|s: &mut State| s.reopen_sign_in()));
+                actions = actions.child(
+                    quiet("sign-in-reopen", "Open the page again")
+                        .on_press(|s: &mut State| s.reopen_sign_in()),
+                );
             }
-            waiting = waiting.child(actions.child(quiet("sign-in-cancel", "Cancel").on_press(|s: &mut State| s.cancel_sign_in())));
+            waiting = waiting.child(actions.child(
+                quiet("sign-in-cancel", "Cancel").on_press(|s: &mut State| s.cancel_sign_in()),
+            ));
             card = card.child(waiting);
         }
         Auth::Failed(why) => {
             card = card
-                .child(row().key("sign-in-error").role("alert").gap(6.0).center_y().child(icon(&icons::ALERT, 13.0).color(p.danger)).child(text(why.clone()).font(META).color(p.danger).wrap()))
+                .child(
+                    row()
+                        .key("sign-in-error")
+                        .role("alert")
+                        .gap(6.0)
+                        .center_y()
+                        .child(icon(&icons::ALERT, 13.0).color(p.danger))
+                        .child(text(why.clone()).font(META).color(p.danger).wrap()),
+                )
                 .child(primary("sign-in", "Try again").on_press(|s: &mut State| s.sign_in()));
         }
-        Auth::Needed | Auth::Ready => card = card.child(primary("sign-in", "Sign in with Cloudflare").on_press(|s: &mut State| s.sign_in())),
+        Auth::Needed | Auth::Ready => {
+            card = card.child(
+                primary("sign-in", "Sign in with Cloudflare").on_press(|s: &mut State| s.sign_in()),
+            )
+        }
     }
-    card = card
-        .child(el().w_full().h(1.0).fill(p.line))
-        .child(
-            row()
-                .w_full()
-                .center_y()
-                .child(text("The sign-in stays in your Keychain.").font(META).color(p.quiet).grow(1.0).shrink())
-                .child(quiet("switch-scotty", "Another Scotty").on_press(|s: &mut State| s.switch())),
-        );
+    card = card.child(el().w_full().h(1.0).fill(p.line)).child(
+        row()
+            .w_full()
+            .center_y()
+            .child(
+                text("The sign-in stays in your Keychain.")
+                    .font(META)
+                    .color(p.quiet)
+                    .grow(1.0)
+                    .shrink(),
+            )
+            .child(quiet("switch-scotty", "Another Scotty").on_press(|s: &mut State| s.switch())),
+    );
     col()
         .key("sign-in-screen")
         .w_full()
         .h_full()
         .fill(p.bg)
         .child(row().w_full().h(52.0).pl(12.0 + inset).window_drag())
-        .child(row().w_full().grow(1.0).justify_center().center_y().px(24.0).pb(52.0).child(card))
+        .child(
+            row()
+                .w_full()
+                .grow(1.0)
+                .justify_center()
+                .center_y()
+                .px(24.0)
+                .pb(52.0)
+                .child(card),
+        )
 }
 
 /// The New session sheet (`NewSession.tsx`): what to do, where, and which agent.
@@ -210,7 +328,10 @@ fn new_session(s: &State, p: &Palette, layer: &mut Vec<El>) {
     let prompt = text_input(&d.prompt, COMPOSER)
         .key("new-prompt")
         .label("Prompt")
-        .placeholder(format!("Ask {agent} to build, fix or explain… or paste a GitHub link"), p.quiet)
+        .placeholder(
+            format!("Ask {agent} to build, fix or explain… or paste a GitHub link"),
+            p.quiet,
+        )
         .color(p.ink)
         .w_full()
         .min_h(66.0)
@@ -226,8 +347,25 @@ fn new_session(s: &State, p: &Palette, layer: &mut Vec<El>) {
         .shrink()
         .on_edit(|s: &mut State| &mut s.new_session.as_mut().expect("the sheet is open").repo)
         .on_submit(|s: &mut State, _| s.create());
-    let repo_field = row().h(32.0).px(10.0).gap(8.0).radius(RADIUS - 2.0).center_y().border(1.0, p.line).fill(p.bg).grow(1.0).shrink().min_w(0.0).child(icon(&icons::REPO, 14.0).color(p.quiet)).child(repo);
-    let mut agents = row().h(32.0).padding(3.0).gap(2.0).radius(RADIUS - 2.0).fill(p.raised);
+    let repo_field = row()
+        .h(32.0)
+        .px(10.0)
+        .gap(8.0)
+        .radius(RADIUS - 2.0)
+        .center_y()
+        .border(1.0, p.line)
+        .fill(p.bg)
+        .grow(1.0)
+        .shrink()
+        .min_w(0.0)
+        .child(icon(&icons::REPO, 14.0).color(p.quiet))
+        .child(repo);
+    let mut agents = row()
+        .h(32.0)
+        .padding(3.0)
+        .gap(2.0)
+        .radius(RADIUS - 2.0)
+        .fill(p.raised);
     for kind in ["codex", "claude"] {
         let mut chip = row()
             .key(&format!("agent:{kind}"))
@@ -237,7 +375,11 @@ fn new_session(s: &State, p: &Palette, layer: &mut Vec<El>) {
             .px(12.0)
             .radius(6.0)
             .center()
-            .child(text(crate::api::agent_name(kind)).font(META_STRONG).color(if d.agent == kind { p.ink } else { p.muted }))
+            .child(
+                text(crate::api::agent_name(kind))
+                    .font(META_STRONG)
+                    .color(if d.agent == kind { p.ink } else { p.muted }),
+            )
             .on_press(move |s: &mut State| {
                 if let Some(d) = s.new_session.as_mut() {
                     d.agent = kind;
@@ -259,9 +401,17 @@ fn new_session(s: &State, p: &Palette, layer: &mut Vec<El>) {
         .radius(16.0)
         .center()
         .fill(p.button)
-        .child(text(if d.busy { "Starting…" } else { "Start" }).font(META_STRONG).color(p.button_ink))
+        .child(
+            text(if d.busy { "Starting…" } else { "Start" })
+                .font(META_STRONG)
+                .color(p.button_ink),
+        )
         .child(icon(&icons::ARROW_UP, 13.0).color(p.button_ink));
-    create = if ready { create.on_press(|s: &mut State| s.create()) } else { create.opacity(0.5) };
+    create = if ready {
+        create.on_press(|s: &mut State| s.create())
+    } else {
+        create.opacity(0.5)
+    };
     let mut panel = col()
         .key("new-session")
         .role("dialog")
@@ -274,15 +424,59 @@ fn new_session(s: &State, p: &Palette, layer: &mut Vec<El>) {
         .fill(p.surface)
         .border(1.0, p.line)
         .shadow(12.0, 32.0, p.shadow)
-        .child(row().w_full().center_y().child(text("New session").font(theme::TITLE).color(p.ink).grow(1.0)).child(crate::palette::keycap("esc", p)))
+        .child(
+            row()
+                .w_full()
+                .center_y()
+                .child(
+                    text("New session")
+                        .font(theme::TITLE)
+                        .color(p.ink)
+                        .grow(1.0),
+                )
+                .child(crate::palette::keycap("esc", p)),
+        )
         .child(prompt)
-        .child(row().w_full().gap(10.0).center_y().child(repo_field).child(agents).child(create));
+        .child(
+            row()
+                .w_full()
+                .gap(10.0)
+                .center_y()
+                .child(repo_field)
+                .child(agents)
+                .child(create),
+        );
     if !d.error.is_empty() {
-        panel = panel.child(row().gap(6.0).center_y().child(icon(&icons::ALERT, 13.0).color(p.danger)).child(text(d.error.clone()).font(META).color(p.danger).wrap()));
+        panel = panel.child(
+            row()
+                .gap(6.0)
+                .center_y()
+                .child(icon(&icons::ALERT, 13.0).color(p.danger))
+                .child(text(d.error.clone()).font(META).color(p.danger).wrap()),
+        );
     }
-    let panel = panel.child(text("Return starts it.").font(SMALL).color(p.quiet)).modal(true, |s: &mut State| s.new_session = None);
-    layer.push(el().key("new-scrim").absolute(0.0, 0.0).w_full().h_full().fill(p.scrim).a11y_hidden());
-    layer.push(col().key("new-layer").absolute(0.0, 0.0).w_full().h_full().px(16.0).pt(96.0).items_center().child(panel));
+    let panel = panel
+        .child(text("Return starts it.").font(SMALL).color(p.quiet))
+        .modal(true, |s: &mut State| s.new_session = None);
+    layer.push(
+        el().key("new-scrim")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .fill(p.scrim)
+            .a11y_hidden(),
+    );
+    layer.push(
+        col()
+            .key("new-layer")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .px(16.0)
+            .pt(96.0)
+            .items_center()
+            .child(panel),
+    );
 }
 
 // ── Scenes ─────────────────────────────────────────────────────────────────────────────────
@@ -350,7 +544,18 @@ pub const SCENES: &[(&str, fn(&mut State))] = &[
     ("booting", |s| {
         list(s);
         tabs(s);
-        show(s, "s-boot", vec![turn("b1", "Fix flaky checkout test on Safari", Vec::new(), 0.2, None, TurnState::Streaming)]);
+        show(
+            s,
+            "s-boot",
+            vec![turn(
+                "b1",
+                "Fix flaky checkout test on Safari",
+                Vec::new(),
+                0.2,
+                None,
+                TurnState::Streaming,
+            )],
+        );
     }),
     ("stopped", |s| {
         list(s);
@@ -391,7 +596,13 @@ pub const SCENES: &[(&str, fn(&mut State))] = &[
     ("new-session", |s| {
         list(s);
         tabs(s);
-        s.new_session = Some(Draft { prompt: rune::TextEdit::new(""), repo: rune::TextEdit::new("acme/web"), agent: "codex", busy: false, error: String::new() });
+        s.new_session = Some(Draft {
+            prompt: rune::TextEdit::new(""),
+            repo: rune::TextEdit::new("acme/web"),
+            agent: "codex",
+            busy: false,
+            error: String::new(),
+        });
     }),
     ("no-sidebar", |s| {
         list(s);
@@ -408,7 +619,10 @@ fn now() -> f64 {
 }
 
 fn server() -> Server {
-    Server { name: "scotty.example.com".into(), url: "https://scotty.example.com".into() }
+    Server {
+        name: "scotty.example.com".into(),
+        url: "https://scotty.example.com".into(),
+    }
 }
 
 fn open(s: &mut State) {
@@ -437,9 +651,26 @@ struct Sample {
 
 fn sample(x: Sample) -> Session {
     let authority = match x.lifecycle {
-        "booting" => Authority::Transitioning { phase: "container".into() },
-        "failed" => Authority::Stable { lifecycle: "failed".into(), stop: None, failure: Some(crate::api::Failure { code: "workspace".into(), recovery: "resume".into() }) },
-        lifecycle => Authority::Stable { lifecycle: lifecycle.into(), stop: x.stop.map(|reason| Stop { reason: reason.into(), exit_code: (reason == "crashed").then_some(137), max: None }), failure: None },
+        "booting" => Authority::Transitioning {
+            phase: "container".into(),
+        },
+        "failed" => Authority::Stable {
+            lifecycle: "failed".into(),
+            stop: None,
+            failure: Some(crate::api::Failure {
+                code: "workspace".into(),
+                recovery: "resume".into(),
+            }),
+        },
+        lifecycle => Authority::Stable {
+            lifecycle: lifecycle.into(),
+            stop: x.stop.map(|reason| Stop {
+                reason: reason.into(),
+                exit_code: (reason == "crashed").then_some(137),
+                max: None,
+            }),
+            failure: None,
+        },
     };
     Session {
         identity: Identity { id: x.id.into() },
@@ -455,28 +686,130 @@ fn sample(x: Sample) -> Session {
             active_at: at(x.mins),
             origin: x.origin,
         },
-        progress: Progress { working: x.working, turns: x.turns, sleeps_at: (x.lifecycle == "running" && !x.working).then(|| crate::time::iso(now() + 12.0 * MIN)) },
+        progress: Progress {
+            working: x.working,
+            turns: x.turns,
+            sleeps_at: (x.lifecycle == "running" && !x.working)
+                .then(|| crate::time::iso(now() + 12.0 * MIN)),
+        },
     }
 }
 
 fn list(s: &mut State) {
     open(s);
-    let base = Sample { id: "", title: "", repo: "acme/web", lifecycle: "running", working: false, turns: 2, mins: 0.0, agent: "codex", origin: None, stop: None };
+    let base = Sample {
+        id: "",
+        title: "",
+        repo: "acme/web",
+        lifecycle: "running",
+        working: false,
+        turns: 2,
+        mins: 0.0,
+        agent: "codex",
+        origin: None,
+        stop: None,
+    };
     s.sessions = vec![
-        sample(Sample { id: "s-auth", title: "Move sign-in to the new session cookie", turns: 3, mins: 4.0, ..base.clone() }),
-        sample(Sample { id: "s-live", title: "Add retry with backoff to the uploads queue", repo: "acme/api", working: true, turns: 2, mins: 1.0, ..base.clone() }),
-        sample(Sample { id: "s-boot", title: "Fix flaky checkout test on Safari", lifecycle: "booting", turns: 1, mins: 0.2, ..base.clone() }),
-        sample(Sample { id: "s-review", title: "Review PR #482: billing webhooks", repo: "acme/api", turns: 4, mins: 38.0, agent: "claude", origin: Some(Origin::Hook { connection: "github".into(), delivery: "d1".into() }), ..base.clone() }),
-        sample(Sample { id: "s-failed", title: "Upgrade the image pipeline to sharp 0.34", lifecycle: "failed", turns: 0, mins: 70.0, ..base.clone() }),
-        sample(Sample { id: "s-nightly", title: "Nightly dependency bumps", repo: "acme/infra", lifecycle: "stopped", turns: 1, mins: 60.0 * 20.0, origin: Some(Origin::Automation { automation: "nightly-deps".into(), run: "r1".into() }), stop: Some("ended"), ..base.clone() }),
-        sample(Sample { id: "s-flaky", title: "Profile the search endpoint under load", repo: "acme/api", lifecycle: "stopped", turns: 5, mins: 60.0 * 30.0, stop: Some("crashed"), ..base.clone() }),
-        sample(Sample { id: "s-docs", title: "Write the onboarding guide for the CLI", repo: "acme/cli", lifecycle: "stopped", turns: 2, mins: 60.0 * 24.0 * 3.0, stop: Some("idle"), ..base.clone() }),
-        sample(Sample { id: "s-old", title: "Port the settings page to the new forms", lifecycle: "stopped", turns: 6, mins: 60.0 * 24.0 * 12.0, stop: Some("user"), ..base.clone() }),
+        sample(Sample {
+            id: "s-auth",
+            title: "Move sign-in to the new session cookie",
+            turns: 3,
+            mins: 4.0,
+            ..base.clone()
+        }),
+        sample(Sample {
+            id: "s-live",
+            title: "Add retry with backoff to the uploads queue",
+            repo: "acme/api",
+            working: true,
+            turns: 2,
+            mins: 1.0,
+            ..base.clone()
+        }),
+        sample(Sample {
+            id: "s-boot",
+            title: "Fix flaky checkout test on Safari",
+            lifecycle: "booting",
+            turns: 1,
+            mins: 0.2,
+            ..base.clone()
+        }),
+        sample(Sample {
+            id: "s-review",
+            title: "Review PR #482: billing webhooks",
+            repo: "acme/api",
+            turns: 4,
+            mins: 38.0,
+            agent: "claude",
+            origin: Some(Origin::Hook {
+                connection: "github".into(),
+                delivery: "d1".into(),
+            }),
+            ..base.clone()
+        }),
+        sample(Sample {
+            id: "s-failed",
+            title: "Upgrade the image pipeline to sharp 0.34",
+            lifecycle: "failed",
+            turns: 0,
+            mins: 70.0,
+            ..base.clone()
+        }),
+        sample(Sample {
+            id: "s-nightly",
+            title: "Nightly dependency bumps",
+            repo: "acme/infra",
+            lifecycle: "stopped",
+            turns: 1,
+            mins: 60.0 * 20.0,
+            origin: Some(Origin::Automation {
+                automation: "nightly-deps".into(),
+                run: "r1".into(),
+            }),
+            stop: Some("ended"),
+            ..base.clone()
+        }),
+        sample(Sample {
+            id: "s-flaky",
+            title: "Profile the search endpoint under load",
+            repo: "acme/api",
+            lifecycle: "stopped",
+            turns: 5,
+            mins: 60.0 * 30.0,
+            stop: Some("crashed"),
+            ..base.clone()
+        }),
+        sample(Sample {
+            id: "s-docs",
+            title: "Write the onboarding guide for the CLI",
+            repo: "acme/cli",
+            lifecycle: "stopped",
+            turns: 2,
+            mins: 60.0 * 24.0 * 3.0,
+            stop: Some("idle"),
+            ..base.clone()
+        }),
+        sample(Sample {
+            id: "s-old",
+            title: "Port the settings page to the new forms",
+            lifecycle: "stopped",
+            turns: 6,
+            mins: 60.0 * 24.0 * 12.0,
+            stop: Some("user"),
+            ..base.clone()
+        }),
     ];
     s.listed = true;
     // The review has a reply the owner hasn't read.
     for x in &s.sessions {
-        s.seen.insert(x.id().to_string(), if x.id() == "s-review" { 3 } else { x.progress.turns });
+        s.seen.insert(
+            x.id().to_string(),
+            if x.id() == "s-review" {
+                3
+            } else {
+                x.progress.turns
+            },
+        );
     }
 }
 
@@ -485,10 +818,20 @@ fn tabs(s: &mut State) {
     s.open_session("s-live");
     s.open_session("s-auth");
     s.active = 0;
-    let auth = Conversation { current_turn: "t3".into(), turns: vec![first_turn(), second_turn(), third_turn()] };
-    let live = Conversation { current_turn: "l2".into(), turns: vec![live_first(), live_turn()] };
+    let auth = Conversation {
+        current_turn: "t3".into(),
+        turns: vec![first_turn(), second_turn(), third_turn()],
+    };
+    let live = Conversation {
+        current_turn: "l2".into(),
+        turns: vec![live_first(), live_turn()],
+    };
     for c in &mut s.conns {
-        c.conversation = Some(if c.id == "s-auth" { auth.clone() } else { live.clone() });
+        c.conversation = Some(if c.id == "s-auth" {
+            auth.clone()
+        } else {
+            live.clone()
+        });
     }
     s.tabs = vec!["s-auth".into(), "s-live".into()];
     s.active = 0;
@@ -499,14 +842,21 @@ fn show(s: &mut State, id: &str, turns: Vec<Turn>) {
     s.open_session(id);
     let current = turns.last().map_or(String::new(), |t| t.id.clone());
     if let Some(c) = s.conns.iter_mut().find(|c: &&mut Conn| c.id == id) {
-        c.conversation = Some(Conversation { current_turn: current, turns });
+        c.conversation = Some(Conversation {
+            current_turn: current,
+            turns,
+        });
     }
 }
 
 fn tool(id: &str, category: &str, summary: &str, input: &str, output: &str) -> Tool {
     Tool {
         id: id.into(),
-        name: if category == "run" { "shell".into() } else { "tool".into() },
+        name: if category == "run" {
+            "shell".into()
+        } else {
+            "tool".into()
+        },
         category: category.into(),
         summary: summary.into(),
         status: "completed".into(),
@@ -519,12 +869,33 @@ fn tool(id: &str, category: &str, summary: &str, input: &str, output: &str) -> T
     }
 }
 
-fn turn(id: &str, user: &str, items: Vec<Item>, start_mins: f64, end_mins: Option<f64>, state: TurnState) -> Turn {
-    Turn { id: id.into(), state, user: user.into(), assistant: String::new(), items, diff: String::new(), started_at: Some(at(start_mins)), ended_at: end_mins.map(at), files: Vec::new() }
+fn turn(
+    id: &str,
+    user: &str,
+    items: Vec<Item>,
+    start_mins: f64,
+    end_mins: Option<f64>,
+    state: TurnState,
+) -> Turn {
+    Turn {
+        id: id.into(),
+        state,
+        user: user.into(),
+        assistant: String::new(),
+        items,
+        diff: String::new(),
+        started_at: Some(at(start_mins)),
+        ended_at: end_mins.map(at),
+        files: Vec::new(),
+    }
 }
 
 fn text_item(id: &str, words: &str) -> Item {
-    Item::Text { id: id.into(), text: words.into(), done: true }
+    Item::Text {
+        id: id.into(),
+        text: words.into(),
+        done: true,
+    }
 }
 
 const COOKIE_DIFF: &str = "@@ -1,14 +1,17 @@\n import { Hono } from \"hono\";\n-import { readLegacyToken } from \"./legacy\";\n+import { readSession, writeSession } from \"./session-cookie\";\n \n export const auth = new Hono();\n \n auth.post(\"/sign-in\", async (c) => {\n   const user = await verify(c.req);\n-  c.header(\"x-token\", await readLegacyToken(user));\n+  await writeSession(c, user, { maxAge: 60 * 60 * 24 * 14 });\n   return c.json({ ok: true });\n });\n \n auth.get(\"/me\", async (c) => {\n-  const user = await readLegacyToken(c.req.header(\"x-token\"));\n+  const user = await readSession(c);\n+  if (!user) return c.json({ error: \"signed out\" }, 401);\n   return c.json(user);\n });\n";
@@ -587,9 +958,24 @@ fn third_turn() -> Turn {
         "t3",
         "Open a pull request.",
         vec![
-            Item::Tool(tool("x4", "run", "git push -u origin scotty/s-auth", "git push -u origin scotty/s-auth", "branch 'scotty/s-auth' set up to track 'origin/scotty/s-auth'.")),
-            Item::Tool(tool("x5", "run", "gh pr create --fill", "gh pr create --fill", "https://github.com/acme/web/pull/512")),
-            text_item("a3", "Opened [acme/web#512](https://github.com/acme/web/pull/512): *Move sign-in to the signed session cookie*. CI is running."),
+            Item::Tool(tool(
+                "x4",
+                "run",
+                "git push -u origin scotty/s-auth",
+                "git push -u origin scotty/s-auth",
+                "branch 'scotty/s-auth' set up to track 'origin/scotty/s-auth'.",
+            )),
+            Item::Tool(tool(
+                "x5",
+                "run",
+                "gh pr create --fill",
+                "gh pr create --fill",
+                "https://github.com/acme/web/pull/512",
+            )),
+            text_item(
+                "a3",
+                "Opened [acme/web#512](https://github.com/acme/web/pull/512): *Move sign-in to the signed session cookie*. CI is running.",
+            ),
         ],
         6.0,
         Some(4.0),
@@ -603,8 +989,17 @@ fn profile_turn() -> Turn {
         "Search gets slow past 200 requests a second. Profile the endpoint under load and find out why.",
         vec![
             Item::Tool(tool("fr1", "inspect", "Read src/routes/search.ts", "", "")),
-            Item::Tool(tool("fx1", "run", "npx autocannon -c 200 -d 30 localhost:8787/search?q=shoe", "npx autocannon -c 200 -d 30 localhost:8787/search?q=shoe", "Latency p50 41 ms, p99 1,870 ms\n 6k requests in 30s")),
-            text_item("fa1", "Under load the p99 climbs to 1.9 s while p50 stays at 41 ms. Every request rebuilds the synonym table; next I'll capture a profile to confirm."),
+            Item::Tool(tool(
+                "fx1",
+                "run",
+                "npx autocannon -c 200 -d 30 localhost:8787/search?q=shoe",
+                "npx autocannon -c 200 -d 30 localhost:8787/search?q=shoe",
+                "Latency p50 41 ms, p99 1,870 ms\n 6k requests in 30s",
+            )),
+            text_item(
+                "fa1",
+                "Under load the p99 climbs to 1.9 s while p50 stays at 41 ms. Every request rebuilds the synonym table; next I'll capture a profile to confirm.",
+            ),
         ],
         60.0 * 30.0 + 12.0,
         Some(60.0 * 30.0 + 4.0),
@@ -619,7 +1014,10 @@ fn live_first() -> Turn {
         vec![
             Item::Tool(tool("lr1", "inspect", "Read src/queue/uploads.ts", "", "")),
             Item::Tool(tool("lr2", "inspect", "Search putObject", "", "")),
-            text_item("la1", "The queue calls `putObject` once and drops the job on any error. I'll wrap it in a retry with jittered exponential backoff, capped at five tries."),
+            text_item(
+                "la1",
+                "The queue calls `putObject` once and drops the job on any error. I'll wrap it in a retry with jittered exponential backoff, capped at five tries.",
+            ),
         ],
         9.0,
         Some(8.0),
@@ -628,7 +1026,13 @@ fn live_first() -> Turn {
 }
 
 fn live_turn() -> Turn {
-    let mut running = tool("lx2", "run", "npm test -- uploads", "npm test -- uploads", "");
+    let mut running = tool(
+        "lx2",
+        "run",
+        "npm test -- uploads",
+        "npm test -- uploads",
+        "",
+    );
     running.status = "running".into();
     running.exit_code = None;
     turn(

@@ -71,7 +71,12 @@ fn hex(s: &str) -> Color {
 }
 
 fn rgba(r: u8, g: u8, b: u8, a: f32) -> Color {
-    Color { r: f32::from(r) / 255.0, g: f32::from(g) / 255.0, b: f32::from(b) / 255.0, a }
+    Color {
+        r: f32::from(r) / 255.0,
+        g: f32::from(g) / 255.0,
+        b: f32::from(b) / 255.0,
+        a,
+    }
 }
 
 pub fn palette(dark: bool) -> Palette {
@@ -196,32 +201,112 @@ pub mod icons {
     }
 
     stroke!(PLUS, "s-plus", "M8 3.25v9.5M3.25 8h9.5");
-    stroke!(FILTER, "s-filter", "M2.75 4.25h10.5M4.75 8h6.5M6.75 11.75h2.5");
-    stroke!(SEARCH, "s-search", "M7 11.75a4.75 4.75 0 1 0 0-9.5 4.75 4.75 0 0 0 0 9.5ZM10.5 10.5l3.25 3.25");
-    stroke!(SIDEBAR, "s-sidebar", "M2.75 3.25h10.5v9.5H2.75zM6.25 3.25v9.5");
+    stroke!(
+        FILTER,
+        "s-filter",
+        "M2.75 4.25h10.5M4.75 8h6.5M6.75 11.75h2.5"
+    );
+    stroke!(
+        SEARCH,
+        "s-search",
+        "M7 11.75a4.75 4.75 0 1 0 0-9.5 4.75 4.75 0 0 0 0 9.5ZM10.5 10.5l3.25 3.25"
+    );
+    stroke!(
+        SIDEBAR,
+        "s-sidebar",
+        "M2.75 3.25h10.5v9.5H2.75zM6.25 3.25v9.5"
+    );
     stroke!(PANEL, "s-panel", "M2.75 3.25h10.5v9.5H2.75zM9.75 3.25v9.5");
-    stroke!(SETTINGS, "s-settings", "M2.75 4.75h6.5M11.75 4.75h1.5M2.75 11.25h1.5M6.75 11.25h6.5M10.5 3.25v3M5.5 9.75v3");
-    stroke!(BRANCH, "s-branch", "M4.75 2.75v10.5M11.25 6.25a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3ZM11.25 6.25c0 3-6.5 2.5-6.5 5.5");
-    stroke!(REPO, "s-repo", "M3.75 12.25V3.75c0-.55.45-1 1-1h7.5v8.5h-7.5a1 1 0 0 0-1 1Zm0 0c0 .55.45 1 1 1h7.5");
-    stroke!(CHEVRON_RIGHT, "s-chevron-right", "M6.5 4.25 10.25 8 6.5 11.75");
-    stroke!(CHEVRON_DOWN, "s-chevron-down", "M4.25 6.5 8 10.25l3.75-3.75");
+    stroke!(
+        SETTINGS,
+        "s-settings",
+        "M2.75 4.75h6.5M11.75 4.75h1.5M2.75 11.25h1.5M6.75 11.25h6.5M10.5 3.25v3M5.5 9.75v3"
+    );
+    stroke!(
+        BRANCH,
+        "s-branch",
+        "M4.75 2.75v10.5M11.25 6.25a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3ZM11.25 6.25c0 3-6.5 2.5-6.5 5.5"
+    );
+    stroke!(
+        REPO,
+        "s-repo",
+        "M3.75 12.25V3.75c0-.55.45-1 1-1h7.5v8.5h-7.5a1 1 0 0 0-1 1Zm0 0c0 .55.45 1 1 1h7.5"
+    );
+    stroke!(
+        CHEVRON_RIGHT,
+        "s-chevron-right",
+        "M6.5 4.25 10.25 8 6.5 11.75"
+    );
+    stroke!(
+        CHEVRON_DOWN,
+        "s-chevron-down",
+        "M4.25 6.5 8 10.25l3.75-3.75"
+    );
     stroke!(ARROW_UP, "s-arrow-up", "M8 12.75V3.5M4 7.25 8 3.25l4 4");
     stroke!(CHECK, "s-check", "m3.5 8.25 2.75 2.75 6.25-6.5");
     stroke!(X, "s-x", "M4.25 4.25l7.5 7.5M11.75 4.25l-7.5 7.5");
-    stroke!(ALERT, "s-alert", "M8 13.75a5.75 5.75 0 1 0 0-11.5 5.75 5.75 0 0 0 0 11.5ZM8 5v3.5M8 10.75v.25");
+    stroke!(
+        ALERT,
+        "s-alert",
+        "M8 13.75a5.75 5.75 0 1 0 0-11.5 5.75 5.75 0 0 0 0 11.5ZM8 5v3.5M8 10.75v.25"
+    );
     stroke!(FILE, "s-file", "M4.25 2.75h4.5l3 3v7.5h-7.5zM8.75 2.75v3h3");
-    stroke!(FILE_PLUS, "s-file-plus", "M4.25 2.75h4.5l3 3v7.5h-7.5zM8.75 2.75v3h3M8 8v3.5M6.25 9.75h3.5");
-    stroke!(FILE_MINUS, "s-file-minus", "M4.25 2.75h4.5l3 3v7.5h-7.5zM8.75 2.75v3h3M6.25 9.75h3.5");
-    stroke!(GLOBE, "s-globe", "M8 13.75a5.75 5.75 0 1 0 0-11.5 5.75 5.75 0 0 0 0 11.5ZM2.5 8h11M8 2.25c1.5 1.6 2.25 3.5 2.25 5.75S9.5 12.15 8 13.75C6.5 12.15 5.75 10.25 5.75 8S6.5 3.85 8 2.25Z");
-    stroke!(NODES, "s-nodes", "M4.5 6a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5ZM11.5 13.5a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5ZM4.5 6v2.5c0 1.5 1 2.5 2.5 2.5h2.75");
+    stroke!(
+        FILE_PLUS,
+        "s-file-plus",
+        "M4.25 2.75h4.5l3 3v7.5h-7.5zM8.75 2.75v3h3M8 8v3.5M6.25 9.75h3.5"
+    );
+    stroke!(
+        FILE_MINUS,
+        "s-file-minus",
+        "M4.25 2.75h4.5l3 3v7.5h-7.5zM8.75 2.75v3h3M6.25 9.75h3.5"
+    );
+    stroke!(
+        GLOBE,
+        "s-globe",
+        "M8 13.75a5.75 5.75 0 1 0 0-11.5 5.75 5.75 0 0 0 0 11.5ZM2.5 8h11M8 2.25c1.5 1.6 2.25 3.5 2.25 5.75S9.5 12.15 8 13.75C6.5 12.15 5.75 10.25 5.75 8S6.5 3.85 8 2.25Z"
+    );
+    stroke!(
+        NODES,
+        "s-nodes",
+        "M4.5 6a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5ZM11.5 13.5a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5ZM4.5 6v2.5c0 1.5 1 2.5 2.5 2.5h2.75"
+    );
     stroke!(COPY, "s-copy", "M5.75 5.75h7v7h-7zM3.25 10.25v-7h7");
-    stroke!(REFRESH, "s-refresh", "M13.25 8a5.25 5.25 0 1 1-1.54-3.71M13.25 2.75v2.5h-2.5");
-    stroke!(LIST, "s-list", "M5.75 4.25h7.5M5.75 8h7.5M5.75 11.75h7.5M2.75 4.25h.01M2.75 8h.01M2.75 11.75h.01");
-    stroke!(COMPRESS, "s-compress", "M5.25 2.75v2.5h-2.5M10.75 2.75v2.5h2.5M5.25 13.25v-2.5h-2.5M10.75 13.25v-2.5h2.5");
-    stroke!(EXTERNAL, "s-external", "M9.25 2.75h4v4M13.25 2.75 7.5 8.5M11.25 9.25v4h-8.5v-8.5h4");
-    stroke!(DIFF, "s-diff", "M4.75 2.75v6.5M1.75 6h6M8.25 13h6M11.25 4.25V13");
-    stroke!(CIRCLE, "s-circle", "M8 13.25a5.25 5.25 0 1 0 0-10.5 5.25 5.25 0 0 0 0 10.5Z");
-    stroke!(MOON, "s-moon", "M13.25 9.6A5.5 5.5 0 1 1 6.4 2.75a4.5 4.5 0 0 0 6.85 6.85Z");
+    stroke!(
+        REFRESH,
+        "s-refresh",
+        "M13.25 8a5.25 5.25 0 1 1-1.54-3.71M13.25 2.75v2.5h-2.5"
+    );
+    stroke!(
+        LIST,
+        "s-list",
+        "M5.75 4.25h7.5M5.75 8h7.5M5.75 11.75h7.5M2.75 4.25h.01M2.75 8h.01M2.75 11.75h.01"
+    );
+    stroke!(
+        COMPRESS,
+        "s-compress",
+        "M5.25 2.75v2.5h-2.5M10.75 2.75v2.5h2.5M5.25 13.25v-2.5h-2.5M10.75 13.25v-2.5h2.5"
+    );
+    stroke!(
+        EXTERNAL,
+        "s-external",
+        "M9.25 2.75h4v4M13.25 2.75 7.5 8.5M11.25 9.25v4h-8.5v-8.5h4"
+    );
+    stroke!(
+        DIFF,
+        "s-diff",
+        "M4.75 2.75v6.5M1.75 6h6M8.25 13h6M11.25 4.25V13"
+    );
+    stroke!(
+        CIRCLE,
+        "s-circle",
+        "M8 13.25a5.25 5.25 0 1 0 0-10.5 5.25 5.25 0 0 0 0 10.5Z"
+    );
+    stroke!(
+        MOON,
+        "s-moon",
+        "M13.25 9.6A5.5 5.5 0 1 1 6.4 2.75a4.5 4.5 0 0 0 6.85 6.85Z"
+    );
     filled!(STOP, "s-stop", "M4.5 4.5h7v7h-7z");
     filled!(PLAY, "s-play", "M5 3.5v9l7-4.5z");
     pub static MORE: Icon = Icon {

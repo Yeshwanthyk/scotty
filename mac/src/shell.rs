@@ -16,7 +16,16 @@ const LIGHTS: f32 = 78.0;
 
 /// The sessions the sidebar lists under the chips: the filter, then the repository ⌘K picked.
 pub fn listed(s: &State) -> Vec<&Session> {
-    let mut out: Vec<&Session> = s.sessions.iter().filter(|x| s.filter.matches(x) && s.repo_filter.as_ref().is_none_or(|r| x.display.repository == *r)).collect();
+    let mut out: Vec<&Session> = s
+        .sessions
+        .iter()
+        .filter(|x| {
+            s.filter.matches(x)
+                && s.repo_filter
+                    .as_ref()
+                    .is_none_or(|r| x.display.repository == *r)
+        })
+        .collect();
     out.sort_by(|a, b| b.display.active_at.cmp(&a.display.active_at));
     out
 }
@@ -42,7 +51,10 @@ pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
         .center_y()
         .window_drag()
         .child(el().grow(1.0))
-        .child(icon_button("hide-sidebar", &icons::SIDEBAR, "Hide sidebar (⌘\\)", p).on_press(|s: &mut State| s.sidebar = false));
+        .child(
+            icon_button("hide-sidebar", &icons::SIDEBAR, "Hide sidebar (⌘\\)", p)
+                .on_press(|s: &mut State| s.sidebar = false),
+        );
 
     let brand = row()
         .key("brand")
@@ -111,7 +123,13 @@ pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
         .border(1.0, p.line_strong)
         .child(icon(&icons::PLUS, 15.0).color(p.ink))
         .on_press(|s: &mut State| s.start_new());
-    let tools = row().key("sidebar-tools").w_full().gap(6.0).center_y().child(field).child(new);
+    let tools = row()
+        .key("sidebar-tools")
+        .w_full()
+        .gap(6.0)
+        .center_y()
+        .child(field)
+        .child(new);
 
     // A filter in force shows as a chip that clears it; with none, the row is not there.
     let mut chips = row().key("chips").w_full().gap(4.0).pt(6.0).flex_wrap();
@@ -128,14 +146,34 @@ pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
             .radius(CONTROL_RADIUS)
             .center_y()
             .fill(p.hover)
-            .child(text(label).font(SMALL).color(p.muted).max_lines(1).shrink().min_w(0.0))
+            .child(
+                text(label)
+                    .font(SMALL)
+                    .color(p.muted)
+                    .max_lines(1)
+                    .shrink()
+                    .min_w(0.0),
+            )
             .child(icon(&icons::X, 10.0).color(p.quiet))
     };
-    if let Some((_, label)) = Filter::ALL.iter().find(|(f, _)| *f == s.filter && *f != Filter::All) {
-        chips = chips.child(chip(format!("chip:{label}"), label.to_string(), "Clear session filter").on_press(|s: &mut State| s.filter = Filter::All));
+    if let Some((_, label)) = Filter::ALL
+        .iter()
+        .find(|(f, _)| *f == s.filter && *f != Filter::All)
+    {
+        chips = chips.child(
+            chip(
+                format!("chip:{label}"),
+                label.to_string(),
+                "Clear session filter",
+            )
+            .on_press(|s: &mut State| s.filter = Filter::All),
+        );
     }
     if let Some(repo) = &s.repo_filter {
-        chips = chips.child(chip("chip:repo".to_string(), repo.clone(), "Clear repository").on_press(|s: &mut State| s.repo_filter = None));
+        chips = chips.child(
+            chip("chip:repo".to_string(), repo.clone(), "Clear repository")
+                .on_press(|s: &mut State| s.repo_filter = None),
+        );
     }
     if s.filter_menu {
         filter_menu(s, p, layer);
@@ -144,11 +182,20 @@ pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
     let shown = listed(s);
     let (stopped, live): (Vec<&Session>, Vec<&Session>) = shown.iter().partition(|x| x.dormant());
     let mut list = col().key("session-list").w_full().gap(1.0);
-    let quiet_line = |words: &str| text(words.to_string()).font(META).color(p.quiet).wrap().px(10.0).py(8.0);
+    let quiet_line = |words: &str| {
+        text(words.to_string())
+            .font(META)
+            .color(p.quiet)
+            .wrap()
+            .px(10.0)
+            .py(8.0)
+    };
     if s.list_error.is_some() && s.sessions.is_empty() {
         list = list.child(quiet_line("Can't reach Scotty. Retrying…"));
     } else if s.listed && s.sessions.is_empty() {
-        list = list.child(quiet_line("No sessions yet. Start one and it shows up here."));
+        list = list.child(quiet_line(
+            "No sessions yet. Start one and it shows up here.",
+        ));
     } else if s.listed && shown.is_empty() {
         list = list.child(quiet_line("Nothing matches."));
     }
@@ -157,7 +204,15 @@ pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
         let g = time::group_of(&x.display.active_at, now);
         if g != group {
             let label = time::GROUPS[g];
-            list = list.child(text(label).key(format!("group:{label}")).font(LABEL).color(p.quiet).px(8.0).pt(12.0).pb(4.0));
+            list = list.child(
+                text(label)
+                    .key(format!("group:{label}"))
+                    .font(LABEL)
+                    .color(p.quiet)
+                    .px(8.0)
+                    .pt(12.0)
+                    .pb(4.0),
+            );
             group = g;
         }
         list = list.child(session_row(s, x, k, p, now));
@@ -168,7 +223,11 @@ pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
             row()
                 .key("stopped-toggle")
                 .role("button")
-                .label(if open { "Hide stopped sessions" } else { "Show stopped sessions" })
+                .label(if open {
+                    "Hide stopped sessions"
+                } else {
+                    "Show stopped sessions"
+                })
                 .w_full()
                 .h(28.0)
                 .mt(8.0)
@@ -178,7 +237,17 @@ pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
                 .radius(CONTROL_RADIUS)
                 .hover(p.hover)
                 .child(text("Stopped").font(LABEL).color(p.quiet))
-                .child(icon(if open { &icons::CHEVRON_DOWN } else { &icons::CHEVRON_RIGHT }, 12.0).color(p.quiet))
+                .child(
+                    icon(
+                        if open {
+                            &icons::CHEVRON_DOWN
+                        } else {
+                            &icons::CHEVRON_RIGHT
+                        },
+                        12.0,
+                    )
+                    .color(p.quiet),
+                )
                 .child(el().grow(1.0))
                 .child(text(stopped.len().to_string()).font(SMALL).color(p.quiet))
                 .on_press(move |s: &mut State| s.show_stopped = Some(!open)),
@@ -189,7 +258,17 @@ pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
             }
         }
     }
-    let scroll = col().key("sidebar-scroll").w_full().grow(1.0).shrink().min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(16.0).child(list);
+    let scroll = col()
+        .key("sidebar-scroll")
+        .w_full()
+        .grow(1.0)
+        .shrink()
+        .min_h(0.0)
+        .scroll(ScrollSpec {
+            stick_bottom: false,
+        })
+        .scroll_edge_fade(16.0)
+        .child(list);
 
     let host = s.server.as_ref();
     let (dot, why) = match &s.list_link {
@@ -210,7 +289,9 @@ pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
                 .key("host")
                 .role("button")
                 .label("Switch Scotty")
-                .help(host.map_or(String::new(), |h| format!("{} · {why} · switch Scotty", h.url)))
+                .help(host.map_or(String::new(), |h| {
+                    format!("{} · {why} · switch Scotty", h.url)
+                }))
                 .grow(1.0)
                 .shrink()
                 .min_w(0.0)
@@ -221,10 +302,20 @@ pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
                 .radius(CONTROL_RADIUS)
                 .hover(p.hover)
                 .child(el().size(7.0, 7.0).radius(3.5).fill(dot))
-                .child(text(host.map_or("Scotty", |h| h.name.as_str()).to_string()).font(META).color(p.muted).max_lines(1).shrink().min_w(0.0))
+                .child(
+                    text(host.map_or("Scotty", |h| h.name.as_str()).to_string())
+                        .font(META)
+                        .color(p.muted)
+                        .max_lines(1)
+                        .shrink()
+                        .min_w(0.0),
+                )
                 .on_press(|s: &mut State| s.switch()),
         )
-        .child(icon_button("open-settings", &icons::SETTINGS, "Settings (⌘,)", p).on_press(|s: &mut State| s.open_settings(None)));
+        .child(
+            icon_button("open-settings", &icons::SETTINGS, "Settings (⌘,)", p)
+                .on_press(|s: &mut State| s.open_settings(None)),
+        );
 
     col()
         .key("sidebar")
@@ -233,8 +324,26 @@ pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
         .fill(p.sidebar)
         .border_sides([0.0, 1.0, 0.0, 0.0], p.line)
         .child(head)
-        .child(col().w_full().grow(1.0).shrink().min_h(0.0).px(8.0).child(brand).child(tools).child(chips).child(scroll))
-        .child(col().w_full().px(8.0).pb(4.0).child(el().w_full().h(1.0).mb(2.0).fill(p.line)).child(foot))
+        .child(
+            col()
+                .w_full()
+                .grow(1.0)
+                .shrink()
+                .min_h(0.0)
+                .px(8.0)
+                .child(brand)
+                .child(tools)
+                .child(chips)
+                .child(scroll),
+        )
+        .child(
+            col()
+                .w_full()
+                .px(8.0)
+                .pb(4.0)
+                .child(el().w_full().h(1.0).mb(2.0).fill(p.line))
+                .child(foot),
+        )
 }
 
 /// One session: a mark for news on the left (a spinner while it works, a dot for a failure or an
@@ -258,18 +367,45 @@ fn session_row(s: &State, x: &Session, k: &Kit, p: &Palette, now: f64) -> El {
             Status::Unseen => p.attention,
             _ => p.working,
         };
-        line = line.child(text(status.label().to_string()).font(SMALL).color(color)).child(text(format!("· {repo}")).font(SMALL).color(p.quiet).max_lines(1).shrink().min_w(0.0));
+        line = line
+            .child(text(status.label().to_string()).font(SMALL).color(color))
+            .child(
+                text(format!("· {repo}"))
+                    .font(SMALL)
+                    .color(p.quiet)
+                    .max_lines(1)
+                    .shrink()
+                    .min_w(0.0),
+            );
     } else {
-        line = line.child(text(format!("{repo} · {}", time::ago(&x.display.active_at, now))).font(SMALL).color(p.quiet).max_lines(1).shrink().min_w(0.0));
+        line = line.child(
+            text(format!("{repo} · {}", time::ago(&x.display.active_at, now)))
+                .font(SMALL)
+                .color(p.quiet)
+                .max_lines(1)
+                .shrink()
+                .min_w(0.0),
+        );
     }
     let mark = match status {
         Status::Working | Status::Starting => spinner(12.0, p.working, k),
         Status::Failed => el().size(6.0, 6.0).radius(3.0).fill(p.danger),
         Status::Unseen => el().size(6.0, 6.0).radius(3.0).fill(p.attention),
-        _ if tabbed && !selected => el().size(4.0, 4.0).radius(2.0).fill(p.quiet).help("Open in a tab"),
+        _ if tabbed && !selected => el()
+            .size(4.0, 4.0)
+            .radius(2.0)
+            .fill(p.quiet)
+            .help("Open in a tab"),
         _ => el(),
     };
-    let title_color = if selected || matches!(status, Status::Unseen | Status::Working | Status::Starting) { p.ink } else if x.dormant() { p.quiet } else { p.muted };
+    let title_color =
+        if selected || matches!(status, Status::Unseen | Status::Working | Status::Starting) {
+            p.ink
+        } else if x.dormant() {
+            p.quiet
+        } else {
+            p.muted
+        };
     let mut item = row()
         .key(format!("row:{id}"))
         .role("button")
@@ -289,7 +425,16 @@ fn session_row(s: &State, x: &Session, k: &Kit, p: &Palette, now: f64) -> El {
                 .shrink()
                 .min_w(0.0)
                 .gap(1.0)
-                .child(text(x.display.title.clone()).font(if selected { ROW_TITLE_STRONG } else { ROW_TITLE }).color(title_color).max_lines(1))
+                .child(
+                    text(x.display.title.clone())
+                        .font(if selected {
+                            ROW_TITLE_STRONG
+                        } else {
+                            ROW_TITLE
+                        })
+                        .color(title_color)
+                        .max_lines(1),
+                )
                 .child(line),
         )
         .on_press(move |s: &mut State| s.open_session(&id));
@@ -301,7 +446,16 @@ fn session_row(s: &State, x: &Session, k: &Kit, p: &Palette, now: f64) -> El {
 
 /// The filter menu under the search field: one choice at a time, the current one checked.
 fn filter_menu(s: &State, p: &Palette, layer: &mut Vec<El>) {
-    let mut menu = col().key("filter-menu").role("menu").label("Filter sessions").w(180.0).padding(5.0).radius(RADIUS).fill(p.surface).border(1.0, p.line_strong).shadow(8.0, 24.0, p.shadow);
+    let mut menu = col()
+        .key("filter-menu")
+        .role("menu")
+        .label("Filter sessions")
+        .w(180.0)
+        .padding(5.0)
+        .radius(RADIUS)
+        .fill(p.surface)
+        .border(1.0, p.line_strong)
+        .shadow(8.0, 24.0, p.shadow);
     for (filter, label) in Filter::ALL {
         let on = s.filter == filter;
         menu = menu.child(
@@ -317,7 +471,11 @@ fn filter_menu(s: &State, p: &Palette, layer: &mut Vec<El>) {
                 .center_y()
                 .hover(p.hover)
                 .child(text(label).font(META).color(p.ink).grow(1.0))
-                .child(if on { icon(&icons::CHECK, 14.0).color(p.ink) } else { el().size(14.0, 14.0) })
+                .child(if on {
+                    icon(&icons::CHECK, 14.0).color(p.ink)
+                } else {
+                    el().size(14.0, 14.0)
+                })
                 .on_press(move |s: &mut State| {
                     s.filter = filter;
                     s.filter_menu = false;
@@ -325,7 +483,16 @@ fn filter_menu(s: &State, p: &Palette, layer: &mut Vec<El>) {
         );
     }
     let menu = menu.modal(true, |s: &mut State| s.filter_menu = false);
-    layer.push(col().key("filter-menu-layer").absolute(0.0, 0.0).w_full().h_full().pt(TOOLS_TOP + CONTROL + 6.0).pl(8.0).child(menu));
+    layer.push(
+        col()
+            .key("filter-menu-layer")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .pt(TOOLS_TOP + CONTROL + 6.0)
+            .pl(8.0)
+            .child(menu),
+    );
 }
 
 /// The tab strip across the top, the window's drag band. Each tab is a session the user opened.
@@ -342,10 +509,13 @@ pub fn tab_bar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
                 _ if conn.is_some_and(|c| c.missing) => Some(TabItemStatus::Failed),
                 _ => None,
             };
-            TabItem::new(id.clone(), s.title_of(id)).icon(&icons::REPO).status(tab)
+            TabItem::new(id.clone(), s.title_of(id))
+                .icon(&icons::REPO)
+                .status(tab)
         })
         .collect();
-    let plus = icon_button("new-tab", &icons::PLUS, "New session (⌘N)", p).on_press(|s: &mut State| s.start_new());
+    let plus = icon_button("new-tab", &icons::PLUS, "New session (⌘N)", p)
+        .on_press(|s: &mut State| s.start_new());
     let strip = TabStrip::new("tabs", TabOrientation::Horizontal)
         .tabs(items)
         .active(s.current())
@@ -367,11 +537,23 @@ pub fn tab_bar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
         })
         .on_reorder(|s: &mut State, r: TabReorder, _: &mut Tx| s.move_tab(r.from, r.to))
         .build_layered(k, layer);
-    let mut bar = row().key("tab-bar").w_full().h(BAR).pr(12.0).gap(6.0).center_y().fill(p.bg).border_sides([0.0, 0.0, 1.0, 0.0], p.line).window_drag();
+    let mut bar = row()
+        .key("tab-bar")
+        .w_full()
+        .h(BAR)
+        .pr(12.0)
+        .gap(6.0)
+        .center_y()
+        .fill(p.bg)
+        .border_sides([0.0, 0.0, 1.0, 0.0], p.line)
+        .window_drag();
     bar = if s.sidebar {
         bar.pl(8.0)
     } else {
-        bar.pl(cx.titlebar_inset().max(LIGHTS)).child(icon_button("show-sidebar", &icons::SIDEBAR, "Show sidebar (⌘\\)", p).on_press(|s: &mut State| s.sidebar = true))
+        bar.pl(cx.titlebar_inset().max(LIGHTS)).child(
+            icon_button("show-sidebar", &icons::SIDEBAR, "Show sidebar (⌘\\)", p)
+                .on_press(|s: &mut State| s.sidebar = true),
+        )
     };
     bar.child(strip)
 }

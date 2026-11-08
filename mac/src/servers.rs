@@ -33,7 +33,16 @@ pub fn known() -> Vec<Server> {
 pub fn last() -> Option<Server> {
     let saved = load();
     let url = saved.last?;
-    Some(saved.servers.into_iter().find(|k| same(&k.url, &url)).unwrap_or_else(|| Server { name: name_of(&url), url }))
+    Some(
+        saved
+            .servers
+            .into_iter()
+            .find(|k| same(&k.url, &url))
+            .unwrap_or_else(|| Server {
+                name: name_of(&url),
+                url,
+            }),
+    )
 }
 
 pub fn opened(server: &Server) {
@@ -72,14 +81,21 @@ pub fn parse(typed: &str) -> Option<Server> {
     if typed.is_empty() || typed.contains(char::is_whitespace) {
         return None;
     }
-    let with_scheme = if typed.contains("://") { typed.to_string() } else { format!("https://{typed}") };
+    let with_scheme = if typed.contains("://") {
+        typed.to_string()
+    } else {
+        format!("https://{typed}")
+    };
     let (scheme, rest) = with_scheme.split_once("://")?;
     let host = rest.split('/').next()?.to_ascii_lowercase();
     if !matches!(scheme, "https" | "http") || !host.contains(['.', ':']) {
         return None;
     }
     let url = format!("{scheme}://{host}");
-    Some(Server { name: name_of(&url), url })
+    Some(Server {
+        name: name_of(&url),
+        url,
+    })
 }
 
 fn name_of(url: &str) -> String {
@@ -87,18 +103,23 @@ fn name_of(url: &str) -> String {
 }
 
 fn same(a: &str, b: &str) -> bool {
-    a.trim_end_matches('/').eq_ignore_ascii_case(b.trim_end_matches('/'))
+    a.trim_end_matches('/')
+        .eq_ignore_ascii_case(b.trim_end_matches('/'))
 }
 
 fn saved_path() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support/scotty-mac/servers.json"))
+    std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join("Library/Application Support/scotty-mac/servers.json"))
 }
 
 fn load() -> Saved {
     if std::env::var_os("APP_OFFLINE").is_some() {
         return Saved::default();
     }
-    saved_path().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    saved_path()
+        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
 }
 
 fn store(saved: &Saved) {
@@ -120,9 +141,18 @@ mod tests {
 
     #[test]
     fn a_typed_address_becomes_a_server() {
-        assert_eq!(parse("scotty.example.com").unwrap().url, "https://scotty.example.com");
-        assert_eq!(parse("https://Scotty.Example.com/s/abc").unwrap().name, "scotty.example.com");
-        assert_eq!(parse("http://127.0.0.1:8787").unwrap().url, "http://127.0.0.1:8787");
+        assert_eq!(
+            parse("scotty.example.com").unwrap().url,
+            "https://scotty.example.com"
+        );
+        assert_eq!(
+            parse("https://Scotty.Example.com/s/abc").unwrap().name,
+            "scotty.example.com"
+        );
+        assert_eq!(
+            parse("http://127.0.0.1:8787").unwrap().url,
+            "http://127.0.0.1:8787"
+        );
         assert!(parse("not an address").is_none());
         assert!(parse("ftp://x.y").is_none());
     }

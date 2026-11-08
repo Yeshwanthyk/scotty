@@ -56,18 +56,27 @@ pub fn token(base: &str) -> Result<String, NoToken> {
         Some(t) => Some(t.clone()),
         None => keychain::get(&origin).map_err(|code| NoToken::Bad(format!("macOS Keychain didn't let Scotty read its sign-in (error {code}). Allow it when macOS asks, or sign in again.")))?,
     };
-    let Some(token) = token else { return Err(NoToken::SignIn) };
+    let Some(token) = token else {
+        return Err(NoToken::SignIn);
+    };
     saved.insert(origin, token.clone());
-    if expired(&token) { Err(NoToken::SignIn) } else { Ok(token) }
+    if expired(&token) {
+        Err(NoToken::SignIn)
+    } else {
+        Ok(token)
+    }
 }
 
 /// The saved tokens this run has read, by origin. macOS asks before a rebuilt app reads a token an
 /// earlier build saved, so the app reads each one once rather than on every request's thread. The
 /// lock also keeps a refusal's read-then-delete and a sign-in's save from interleaving.
-static KEYCHAIN: std::sync::Mutex<std::collections::BTreeMap<String, String>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+static KEYCHAIN: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 fn held() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<String, String>> {
-    KEYCHAIN.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    KEYCHAIN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Scotty refused `sent` (Access answered 401, 403 or a redirect): drop it, so the next request
@@ -85,7 +94,11 @@ pub fn refused(base: &str, sent: &str) {
 /// The browser sign-in, steps 1 to 4. `opened` gets the sign-in page's address once the browser
 /// shows it, so the app can offer to open it again; `cancelled` ends the wait between long polls.
 /// Blocks until the owner finishes, gives up, or cancels: run it off the UI thread.
-pub fn sign_in(base: &str, opened: impl FnOnce(String), cancelled: impl Fn() -> bool) -> Result<(), String> {
+pub fn sign_in(
+    base: &str,
+    opened: impl FnOnce(String),
+    cancelled: impl Fn() -> bool,
+) -> Result<(), String> {
     let origin = origin(base)?;
     let app = app_info(&origin)?;
     let token = transfer(&origin, &app.aud, opened, cancelled)?;
@@ -106,11 +119,17 @@ pub fn forget(base: &str) {
 /// `https://host` with no path, lower-case: the Keychain account and the Access app's address.
 fn origin(base: &str) -> Result<String, String> {
     let base = base.trim().trim_end_matches('/');
-    let (scheme, rest) = base.split_once("://").ok_or_else(|| format!("{base} isn't an address (https://…)"))?;
+    let (scheme, rest) = base
+        .split_once("://")
+        .ok_or_else(|| format!("{base} isn't an address (https://…)"))?;
     if scheme != "https" {
         return Err(format!("{base}: a deployed Scotty answers on https"));
     }
-    let host = rest.split('/').next().unwrap_or_default().to_ascii_lowercase();
+    let host = rest
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     if host.is_empty() {
         return Err(format!("{base} has no host"));
     }
@@ -119,13 +138,18 @@ fn origin(base: &str) -> Result<String, String> {
 
 /// `http://127.0.0.1:…`, `http://localhost:…` or `http://[::1]:…`: a Worker on this Mac.
 fn loopback(base: &str) -> bool {
-    let Some(rest) = base.trim().strip_prefix("http://") else { return false };
+    let Some(rest) = base.trim().strip_prefix("http://") else {
+        return false;
+    };
     let authority = rest.split('/').next().unwrap_or_default();
     let host = match authority.strip_prefix('[') {
         Some(v6) => v6.split(']').next().unwrap_or_default(),
         None => authority.split(':').next().unwrap_or_default(),
     };
-    matches!(host.to_ascii_lowercase().as_str(), "127.0.0.1" | "localhost" | "::1")
+    matches!(
+        host.to_ascii_lowercase().as_str(),
+        "127.0.0.1" | "localhost" | "::1"
+    )
 }
 
 fn host_of(origin: &str) -> &str {
@@ -172,13 +196,19 @@ fn app_info(origin: &str) -> Result<AppInfo, String> {
     let unverified: AppInfo = claims(&jwt).ok_or("Access sent an unreadable app description")?;
     let team = unverified.auth_domain.to_ascii_lowercase();
     if !team.ends_with(ACCESS_DOMAIN_SUFFIX) || team.contains('/') {
-        return Err(format!("Access named an unexpected sign-in domain ({team})"));
+        return Err(format!(
+            "Access named an unexpected sign-in domain ({team})"
+        ));
     }
     let info = verify(&jwt, &team)?;
 
     let now = now();
     if !info.hostname.eq_ignore_ascii_case(host_of(origin)) {
-        return Err(format!("Access described {} when asked about {}", info.hostname, host_of(origin)));
+        return Err(format!(
+            "Access described {} when asked about {}",
+            info.hostname,
+            host_of(origin)
+        ));
     }
     if info.kind != "match" || info.aud.is_empty() {
         return Err("Access found no app for this address".into());
@@ -203,7 +233,10 @@ struct Jwk {
 
 fn verify(jwt: &str, team: &str) -> Result<AppInfo, String> {
     use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
-    let kid = decode_header(jwt).ok().and_then(|h| h.kid).ok_or("Access's app description isn't signed")?;
+    let kid = decode_header(jwt)
+        .ok()
+        .and_then(|h| h.kid)
+        .ok_or("Access's app description isn't signed")?;
     let certs = agent()
         .get(&format!("https://{team}/cdn-cgi/access/certs"))
         .timeout(Duration::from_secs(7))
@@ -211,8 +244,13 @@ fn verify(jwt: &str, team: &str) -> Result<AppInfo, String> {
         .map_err(|e| format!("couldn't fetch {team}'s keys: {e}"))?
         .into_string()
         .map_err(|e| format!("couldn't fetch {team}'s keys: {e}"))?;
-    let certs: Certs = serde_json::from_str(&certs).map_err(|e| format!("{team}'s keys didn't parse: {e}"))?;
-    let key = certs.keys.iter().find(|k| k.kid == kid).ok_or("Access signed with a key its team doesn't list")?;
+    let certs: Certs =
+        serde_json::from_str(&certs).map_err(|e| format!("{team}'s keys didn't parse: {e}"))?;
+    let key = certs
+        .keys
+        .iter()
+        .find(|k| k.kid == kid)
+        .ok_or("Access signed with a key its team doesn't list")?;
     let key = DecodingKey::from_rsa_components(&key.n, &key.e).map_err(|e| e.to_string())?;
     let mut validation = Validation::new(Algorithm::RS256);
     validation.required_spec_claims.clear();
@@ -229,7 +267,12 @@ struct Transferred {
 }
 
 /// Steps 2 and 3: the browser signs in; the token comes back sealed to a key only this process has.
-fn transfer(origin: &str, aud: &str, opened: impl FnOnce(String), cancelled: impl Fn() -> bool) -> Result<String, String> {
+fn transfer(
+    origin: &str,
+    aud: &str,
+    opened: impl FnOnce(String),
+    cancelled: impl Fn() -> bool,
+) -> Result<String, String> {
     let secret = SecretKey::generate(&mut OsRng);
     let public = URL_SAFE.encode(secret.public_key().as_bytes());
 
@@ -241,7 +284,10 @@ fn transfer(origin: &str, aud: &str, opened: impl FnOnce(String), cancelled: imp
         enc(&redirect),
         enc(&public)
     );
-    std::process::Command::new("open").arg(&url).status().map_err(|e| format!("couldn't open the browser: {e}"))?;
+    std::process::Command::new("open")
+        .arg(&url)
+        .status()
+        .map_err(|e| format!("couldn't open the browser: {e}"))?;
     opened(url);
 
     let poll = format!("{TRANSFER}{public}");
@@ -251,16 +297,24 @@ fn transfer(origin: &str, aud: &str, opened: impl FnOnce(String), cancelled: imp
         }
         match agent().get(&poll).timeout(POLL_TIMEOUT).call() {
             Ok(response) if response.status() == 200 => {
-                let sender = response.header("service-public-key").ok_or("the sign-in came back without its key")?.to_string();
+                let sender = response
+                    .header("service-public-key")
+                    .ok_or("the sign-in came back without its key")?
+                    .to_string();
                 let body = response.into_string().map_err(|e| e.to_string())?;
-                let sealed = STANDARD.decode(body.trim()).map_err(|_| "the sign-in came back unreadable")?;
+                let sealed = STANDARD
+                    .decode(body.trim())
+                    .map_err(|_| "the sign-in came back unreadable")?;
                 let opened = open(&sealed, &sender, &secret)?;
-                let tokens: Transferred = serde_json::from_slice(&opened).map_err(|_| "the sign-in came back unreadable")?;
+                let tokens: Transferred = serde_json::from_slice(&opened)
+                    .map_err(|_| "the sign-in came back unreadable")?;
                 return Ok(tokens.app_token);
             }
             // Not signed in yet: the endpoint answers once the browser finishes.
             Ok(_) | Err(ureq::Error::Status(400..=499, _)) => {}
-            Err(ureq::Error::Status(code, _)) => return Err(format!("Cloudflare's sign-in service answered {code}")),
+            Err(ureq::Error::Status(code, _)) => {
+                return Err(format!("Cloudflare's sign-in service answered {code}"));
+            }
             Err(ureq::Error::Transport(e)) if e.kind() == ureq::ErrorKind::Io => {} // the long poll timed out
             Err(e) => return Err(format!("Cloudflare's sign-in service: {e}")),
         }
@@ -273,7 +327,11 @@ fn open(sealed: &[u8], sender: &str, secret: &SecretKey) -> Result<Vec<u8>, Stri
     if sealed.len() < 24 {
         return Err("the sign-in came back too short".into());
     }
-    let sender = URL_SAFE.decode(sender).ok().and_then(|b| <[u8; 32]>::try_from(b).ok()).ok_or("the sign-in's key is malformed")?;
+    let sender = URL_SAFE
+        .decode(sender)
+        .ok()
+        .and_then(|b| <[u8; 32]>::try_from(b).ok())
+        .ok_or("the sign-in's key is malformed")?;
     let (nonce, body) = sealed.split_at(24);
     SalsaBox::new(&PublicKey::from(sender), secret)
         .decrypt(nonce.into(), body)
@@ -284,7 +342,9 @@ fn enc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }
@@ -306,12 +366,17 @@ fn expired(jwt: &str) -> bool {
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// The login Keychain, one generic password per Scotty address.
 mod keychain {
-    use security_framework::passwords::{delete_generic_password, get_generic_password, set_generic_password};
+    use security_framework::passwords::{
+        delete_generic_password, get_generic_password, set_generic_password,
+    };
 
     use super::KEYCHAIN_SERVICE;
 
@@ -340,7 +405,10 @@ mod tests {
 
     #[test]
     fn an_address_becomes_its_origin() {
-        assert_eq!(origin("https://Scotty.Example.workers.dev/chat/3").unwrap(), "https://scotty.example.workers.dev");
+        assert_eq!(
+            origin("https://Scotty.Example.workers.dev/chat/3").unwrap(),
+            "https://scotty.example.workers.dev"
+        );
         assert!(origin("http://scotty.example.com").is_err());
         assert!(origin("scotty.example.com").is_err());
     }
@@ -360,18 +428,30 @@ mod tests {
         let app = SecretKey::generate(&mut OsRng);
         let service = SecretKey::generate(&mut OsRng);
         let nonce = [7u8; 24];
-        let sealed = SalsaBox::new(&app.public_key(), &service).encrypt((&nonce).into(), &b"{\"app_token\":\"a.b.c\"}"[..]).unwrap();
+        let sealed = SalsaBox::new(&app.public_key(), &service)
+            .encrypt((&nonce).into(), &b"{\"app_token\":\"a.b.c\"}"[..])
+            .unwrap();
         let wire = [nonce.as_slice(), &sealed].concat();
         let sender = URL_SAFE.encode(service.public_key().as_bytes());
 
         let opened = open(&wire, &sender, &app).unwrap();
-        assert_eq!(serde_json::from_slice::<Transferred>(&opened).unwrap().app_token, "a.b.c");
+        assert_eq!(
+            serde_json::from_slice::<Transferred>(&opened)
+                .unwrap()
+                .app_token,
+            "a.b.c"
+        );
         assert!(open(&wire, &sender, &SecretKey::generate(&mut OsRng)).is_err());
     }
 
     #[test]
     fn a_token_near_its_expiry_counts_as_expired() {
-        let jwt = |exp: u64| format!("h.{}.s", URL_SAFE_NO_PAD.encode(format!("{{\"exp\":{exp}}}")));
+        let jwt = |exp: u64| {
+            format!(
+                "h.{}.s",
+                URL_SAFE_NO_PAD.encode(format!("{{\"exp\":{exp}}}"))
+            )
+        };
         assert!(!expired(&jwt(now() + 3600)));
         assert!(expired(&jwt(now() + 10)));
         assert!(expired("not-a-jwt"));

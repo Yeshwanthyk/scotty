@@ -9,10 +9,15 @@
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-use rune::{AppHandle, AppSpec, Cx, El, ScrollSpec, TextEdit, Tx, Waker, col, el, icon, row, text, text_input};
+use rune::{
+    AppHandle, AppSpec, Cx, El, ScrollSpec, TextEdit, Tx, Waker, col, el, icon, row, text,
+    text_input,
+};
 
 use crate::api::{self, Answer, Credential, RepoSize};
-use crate::theme::{self, META, META_STRONG, PAGE_TITLE, Palette, RADIUS, RADIUS_MD, ROW, ROW_STRONG, SMALL, icons};
+use crate::theme::{
+    self, META, META_STRONG, PAGE_TITLE, Palette, RADIUS, RADIUS_MD, ROW, ROW_STRONG, SMALL, icons,
+};
 use crate::{Appearance, encode, offline, palette::open_url};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,18 +41,69 @@ pub struct Page {
 }
 
 pub const PAGES: [Page; 8] = [
-    Page { id: "accounts", label: "Accounts", detail: "ChatGPT, Claude and GitHub", section: Section::Accounts, icon: &icons::GLOBE },
-    Page { id: "instructions", label: "Instructions", detail: "Added to every session", section: Section::Instructions, icon: &icons::FILE },
-    Page { id: "skills", label: "Skills", detail: "Installed in new sessions", section: Section::Skills, icon: &icons::LIST },
-    Page { id: "repositories", label: "Repositories", detail: "The size new sessions get", section: Section::Repositories, icon: &icons::REPO },
-    Page { id: "connections", label: "Connections", detail: "Webhooks, API tokens and MCP servers", section: Section::Connections, icon: &icons::BRANCH },
-    Page { id: "blueprints", label: "Blueprints", detail: "Connections and automations for one use", section: Section::Blueprints, icon: &icons::NODES },
-    Page { id: "running", label: "Running", detail: "Sessions running and the cap", section: Section::Running, icon: &icons::PLAY },
-    Page { id: "signed-in", label: "Signed in", detail: "Cloudflare Access", section: Section::SignedIn, icon: &icons::CIRCLE },
+    Page {
+        id: "accounts",
+        label: "Accounts",
+        detail: "ChatGPT, Claude and GitHub",
+        section: Section::Accounts,
+        icon: &icons::GLOBE,
+    },
+    Page {
+        id: "instructions",
+        label: "Instructions",
+        detail: "Added to every session",
+        section: Section::Instructions,
+        icon: &icons::FILE,
+    },
+    Page {
+        id: "skills",
+        label: "Skills",
+        detail: "Installed in new sessions",
+        section: Section::Skills,
+        icon: &icons::LIST,
+    },
+    Page {
+        id: "repositories",
+        label: "Repositories",
+        detail: "The size new sessions get",
+        section: Section::Repositories,
+        icon: &icons::REPO,
+    },
+    Page {
+        id: "connections",
+        label: "Connections",
+        detail: "Webhooks, API tokens and MCP servers",
+        section: Section::Connections,
+        icon: &icons::BRANCH,
+    },
+    Page {
+        id: "blueprints",
+        label: "Blueprints",
+        detail: "Connections and automations for one use",
+        section: Section::Blueprints,
+        icon: &icons::NODES,
+    },
+    Page {
+        id: "running",
+        label: "Running",
+        detail: "Sessions running and the cap",
+        section: Section::Running,
+        icon: &icons::PLAY,
+    },
+    Page {
+        id: "signed-in",
+        label: "Signed in",
+        detail: "Cloudflare Access",
+        section: Section::SignedIn,
+        icon: &icons::CIRCLE,
+    },
 ];
 
 fn page_of(section: Section) -> &'static Page {
-    PAGES.iter().find(|p| p.section == section).unwrap_or(&PAGES[0])
+    PAGES
+        .iter()
+        .find(|p| p.section == section)
+        .unwrap_or(&PAGES[0])
 }
 
 /// The size a repository without a default starts at (`src/places/place.ts` `defaultSize`).
@@ -118,7 +174,13 @@ impl State {
         let (section, appearance) = (self.section, self.appearance);
         let waker = self.waker.take();
         let wake_slot = self.wake_slot.clone();
-        *self = State { section, appearance, main, waker, ..State::new(None) };
+        *self = State {
+            section,
+            appearance,
+            main,
+            waker,
+            ..State::new(None)
+        };
         // Keep the one wake slot the window's waker was stored in.
         self.wake_slot = wake_slot.clone();
         self.wake = Arc::new(move || {
@@ -131,15 +193,30 @@ impl State {
     }
 
     fn ask(&self, method: &'static str, path: String, body: Option<String>, tag: Ask) {
-        let (Some(base), Some(_)) = (&self.base, &self.waker) else { return };
+        let (Some(base), Some(_)) = (&self.base, &self.waker) else {
+            return;
+        };
         let wake = self.wake.clone();
-        api::call(base.clone(), method, path, body, tag, self.http.0.clone(), move || wake());
+        api::call(
+            base.clone(),
+            method,
+            path,
+            body,
+            tag,
+            self.http.0.clone(),
+            move || wake(),
+        );
     }
 
     fn load(&mut self) {
         self.ask("GET", "/api/settings".into(), None, Ask::Settings);
         for (i, name) in ["chatgpt", "claude", "github"].iter().enumerate() {
-            self.ask("GET", format!("/api/credentials/{name}"), None, Ask::Credential(i));
+            self.ask(
+                "GET",
+                format!("/api/credentials/{name}"),
+                None,
+                Ask::Credential(i),
+            );
         }
         self.ask("GET", "/api/repos".into(), None, Ask::Repos);
     }
@@ -151,7 +228,12 @@ impl State {
         let text = self.instructions.text.clone();
         self.saving = true;
         self.problem.clear();
-        self.ask("PUT", "/api/settings/instructions".into(), Some(format!(r#"{{"text":{}}}"#, api::json_str(&text))), Ask::SaveInstructions(text));
+        self.ask(
+            "PUT",
+            "/api/settings/instructions".into(),
+            Some(format!(r#"{{"text":{}}}"#, api::json_str(&text))),
+            Ask::SaveInstructions(text),
+        );
     }
 
     fn clear_repo(&mut self, repo: String) {
@@ -160,7 +242,10 @@ impl State {
         }
         self.busy_repo = Some(repo.clone());
         self.problem.clear();
-        let path = format!("/api/repos/{}", repo.split('/').map(encode).collect::<Vec<_>>().join("/"));
+        let path = format!(
+            "/api/repos/{}",
+            repo.split('/').map(encode).collect::<Vec<_>>().join("/")
+        );
         self.ask("DELETE", path, None, Ask::ClearRepo(repo));
     }
 
@@ -175,20 +260,40 @@ impl State {
         if let Some(main) = &self.main {
             main.update(|s, _| s.sign_out());
         }
-        *self = State { section: self.section, appearance: self.appearance, main: self.main.take(), waker: self.waker.take(), wake: self.wake.clone(), wake_slot: self.wake_slot.clone(), ..State::new(None) };
+        *self = State {
+            section: self.section,
+            appearance: self.appearance,
+            main: self.main.take(),
+            waker: self.waker.take(),
+            wake: self.wake.clone(),
+            wake_slot: self.wake_slot.clone(),
+            ..State::new(None)
+        };
     }
 
     fn answer(&mut self, ask: Ask, answer: Answer) {
         match ask {
             Ask::Settings => match answer.map(|b| serde_json::from_str::<api::Settings>(&b)) {
                 Ok(Ok(settings)) => {
-                    if !self.saving && self.instructions.text == self.settings.as_ref().map_or(String::new(), |s| s.instructions.clone()) {
+                    if !self.saving
+                        && self.instructions.text
+                            == self
+                                .settings
+                                .as_ref()
+                                .map_or(String::new(), |s| s.instructions.clone())
+                    {
                         self.instructions = TextEdit::new(&settings.instructions);
                     }
                     self.settings = Some(settings);
                 }
                 Ok(Err(_)) => self.error = "Could not load settings".into(),
-                Err(f) => self.error = if f.message.is_empty() { "Could not load settings".into() } else { f.message },
+                Err(f) => {
+                    self.error = if f.message.is_empty() {
+                        "Could not load settings".into()
+                    } else {
+                        f.message
+                    }
+                }
             },
             Ask::Credential(i) => match answer.map(|b| serde_json::from_str::<Credential>(&b)) {
                 Ok(Ok(c)) => self.accounts[i] = Some(c),
@@ -209,7 +314,13 @@ impl State {
                             s.instructions = text;
                         }
                     }
-                    Err(f) => self.problem = if f.message.is_empty() { "Could not save".into() } else { f.message },
+                    Err(f) => {
+                        self.problem = if f.message.is_empty() {
+                            "Could not save".into()
+                        } else {
+                            f.message
+                        }
+                    }
                 }
             }
             Ask::ClearRepo(repo) => {
@@ -220,7 +331,13 @@ impl State {
                             list.retain(|r| r.repo != repo);
                         }
                     }
-                    Err(f) => self.problem = if f.message.is_empty() { "Could not save".into() } else { f.message },
+                    Err(f) => {
+                        self.problem = if f.message.is_empty() {
+                            "Could not save".into()
+                        } else {
+                            f.message
+                        }
+                    }
                 }
             }
         }
@@ -270,7 +387,17 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     };
     let p = theme::palette(dark);
     let inset = cx.titlebar_inset();
-    let mut nav = col().key("settings-nav").role("navigation").label("Settings").w(224.0).h_full().px(10.0).pb(12.0).gap(2.0).fill(p.sidebar).border_sides([0.0, 1.0, 0.0, 0.0], p.line);
+    let mut nav = col()
+        .key("settings-nav")
+        .role("navigation")
+        .label("Settings")
+        .w(224.0)
+        .h_full()
+        .px(10.0)
+        .pb(12.0)
+        .gap(2.0)
+        .fill(p.sidebar)
+        .border_sides([0.0, 1.0, 0.0, 0.0], p.line);
     nav = nav.child(row().w_full().h(inset.max(28.0) + 10.0).window_drag());
     for page in &PAGES {
         let current = page.section == s.section;
@@ -287,7 +414,18 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
             .center_y()
             .hover(p.hover)
             .child(icon(page.icon, 15.0).color(if current { p.ink } else { p.muted }))
-            .child(col().grow(1.0).shrink().min_w(0.0).child(text(page.label).font(if current { ROW_STRONG } else { ROW }).color(p.ink)).child(text(page.detail).font(SMALL).color(p.quiet).max_lines(1)))
+            .child(
+                col()
+                    .grow(1.0)
+                    .shrink()
+                    .min_w(0.0)
+                    .child(
+                        text(page.label)
+                            .font(if current { ROW_STRONG } else { ROW })
+                            .color(p.ink),
+                    )
+                    .child(text(page.detail).font(SMALL).color(p.quiet).max_lines(1)),
+            )
             .on_press(move |s: &mut State| s.section = section);
         if current {
             item = item.fill(p.selected);
@@ -295,16 +433,30 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         nav = nav.child(item);
     }
     let page = page_of(s.section);
-    let mut body = col().key(&format!("settings-body:{}", page.id)).w_full().max_w(560.0).gap(14.0).child(text(page.label).font(PAGE_TITLE).color(p.ink));
+    let mut body = col()
+        .key(&format!("settings-body:{}", page.id))
+        .w_full()
+        .max_w(560.0)
+        .gap(14.0)
+        .child(text(page.label).font(PAGE_TITLE).color(p.ink));
     if !s.error.is_empty() {
         body = body.child(notice(&s.error, &p));
     }
     let base = s.base.is_some();
     let loaded = s.settings.is_some() && s.accounts.iter().all(Option::is_some);
     body = if !base {
-        body.child(card(&p).child(row_(&p, "No Scotty open", "Open one in the main window to see its settings.", None)))
+        body.child(card(&p).child(row_(
+            &p,
+            "No Scotty open",
+            "Open one in the main window to see its settings.",
+            None,
+        )))
     } else if !loaded && !matches!(s.section, Section::Connections | Section::Blueprints) {
-        if s.error.is_empty() { body.child(skeleton(&p)) } else { body }
+        if s.error.is_empty() {
+            body.child(skeleton(&p))
+        } else {
+            body
+        }
     } else {
         match s.section {
             Section::Accounts => accounts(s, body, &p),
@@ -317,7 +469,12 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                 "connections",
                 &p,
             ),
-            Section::Blueprints => browser_page(body, "A blueprint adds the connections and automations for one use, all off. Choose the repo and agent, paste the secrets it asks for, and install; then paste the URLs where it says and turn the automations on.", "blueprints", &p),
+            Section::Blueprints => browser_page(
+                body,
+                "A blueprint adds the connections and automations for one use, all off. Choose the repo and agent, paste the secrets it asks for, and install; then paste the URLs where it says and turn the automations on.",
+                "blueprints",
+                &p,
+            ),
             Section::Running => running(s, body, &p),
             Section::SignedIn => signed_in(s, body, &p),
         }
@@ -330,12 +487,35 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         .h_full()
         .fill(p.bg)
         .child(row().w_full().h(inset.max(28.0) + 10.0).window_drag())
-        .child(col().key(&format!("settings-scroll:{}", page.id)).w_full().grow(1.0).shrink().min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(row().w_full().justify_center().px(32.0).pb(32.0).child(body)));
+        .child(
+            col()
+                .key(&format!("settings-scroll:{}", page.id))
+                .w_full()
+                .grow(1.0)
+                .shrink()
+                .min_h(0.0)
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .child(
+                    row()
+                        .w_full()
+                        .justify_center()
+                        .px(32.0)
+                        .pb(32.0)
+                        .child(body),
+                ),
+        );
     row().w_full().h_full().fill(p.bg).child(nav).child(main)
 }
 
 fn card(p: &Palette) -> El {
-    col().w_full().radius(RADIUS).clip_rounded(RADIUS).fill(p.surface).border(1.0, p.line)
+    col()
+        .w_full()
+        .radius(RADIUS)
+        .clip_rounded(RADIUS)
+        .fill(p.surface)
+        .border(1.0, p.line)
 }
 
 #[derive(Clone, Copy)]
@@ -346,13 +526,15 @@ enum Tone {
 
 /// The web's settings `Row`: a title and a detail, a status word, then its controls.
 fn row_(p: &Palette, title: &str, detail: &str, status: Option<(&str, Tone)>) -> El {
-    let mut r = row()
-        .w_full()
-        .px(16.0)
-        .py(12.0)
-        .gap(12.0)
-        .center_y()
-        .child(col().grow(1.0).shrink().min_w(0.0).gap(2.0).child(text(title.to_string()).font(ROW_STRONG).color(p.ink).wrap()).child(text(detail.to_string()).font(META).color(p.muted).wrap()));
+    let mut r = row().w_full().px(16.0).py(12.0).gap(12.0).center_y().child(
+        col()
+            .grow(1.0)
+            .shrink()
+            .min_w(0.0)
+            .gap(2.0)
+            .child(text(title.to_string()).font(ROW_STRONG).color(p.ink).wrap())
+            .child(text(detail.to_string()).font(META).color(p.muted).wrap()),
+    );
     if let Some((word, tone)) = status {
         let color = match tone {
             Tone::Good => p.done,
@@ -379,7 +561,11 @@ fn button(key: &str, label: &str, primary: bool, p: &Palette) -> El {
         .center()
         .fill(if primary { p.button } else { p.raised })
         .border(1.0, if primary { p.button } else { p.line })
-        .child(text(label.to_string()).font(META_STRONG).color(if primary { p.button_ink } else { p.ink }))
+        .child(text(label.to_string()).font(META_STRONG).color(if primary {
+            p.button_ink
+        } else {
+            p.ink
+        }))
 }
 
 fn intro(words: &str, p: &Palette) -> El {
@@ -387,19 +573,49 @@ fn intro(words: &str, p: &Palette) -> El {
 }
 
 fn notice(words: &str, p: &Palette) -> El {
-    row().key("settings-error").role("alert").w_full().gap(6.0).center_y().child(icon(&icons::ALERT, 13.0).color(p.danger)).child(text(words.to_string()).font(META).color(p.danger).wrap().grow(1.0).shrink())
+    row()
+        .key("settings-error")
+        .role("alert")
+        .w_full()
+        .gap(6.0)
+        .center_y()
+        .child(icon(&icons::ALERT, 13.0).color(p.danger))
+        .child(
+            text(words.to_string())
+                .font(META)
+                .color(p.danger)
+                .wrap()
+                .grow(1.0)
+                .shrink(),
+        )
 }
 
 fn skeleton(p: &Palette) -> El {
-    card(p).child(col().w_full().px(16.0).py(14.0).gap(8.0).child(el().w_frac(0.4).h(12.0).radius(6.0).fill(p.raised)).child(el().w_frac(0.7).h(10.0).radius(5.0).fill(p.raised)))
+    card(p).child(
+        col()
+            .w_full()
+            .px(16.0)
+            .py(14.0)
+            .gap(8.0)
+            .child(el().w_frac(0.4).h(12.0).radius(6.0).fill(p.raised))
+            .child(el().w_frac(0.7).h(10.0).radius(5.0).fill(p.raised)),
+    )
 }
 
 fn accounts(s: &State, body: El, p: &Palette) -> El {
-    let status = |i: usize| s.accounts[i].as_ref().map_or("signed-out", |c| c.status.as_str());
+    let status = |i: usize| {
+        s.accounts[i]
+            .as_ref()
+            .map_or("signed-out", |c| c.status.as_str())
+    };
     let chatgpt = status(0);
     let claude = status(1);
     let github = s.accounts[2].as_ref();
-    let browse = |key: &str, label: &str| button(key, label, false, p).help("Opens Settings in the browser").on_press(|s: &mut State| s.browse("accounts"));
+    let browse = |key: &str, label: &str| {
+        button(key, label, false, p)
+            .help("Opens Settings in the browser")
+            .on_press(|s: &mut State| s.browse("accounts"))
+    };
     let chatgpt_row = row_(
         p,
         "ChatGPT",
@@ -414,7 +630,14 @@ fn accounts(s: &State, body: El, p: &Palette) -> El {
             _ => ("Not signed in", Tone::Warn),
         }),
     )
-    .child(browse("chatgpt-sign-in", if chatgpt == "signed-in" { "Sign in again" } else { "Sign in" }));
+    .child(browse(
+        "chatgpt-sign-in",
+        if chatgpt == "signed-in" {
+            "Sign in again"
+        } else {
+            "Sign in"
+        },
+    ));
     let claude_row = row_(
         p,
         "Claude",
@@ -429,13 +652,51 @@ fn accounts(s: &State, body: El, p: &Palette) -> El {
             _ => ("Not set", Tone::Warn),
         }),
     )
-    .child(browse("claude-token", if claude == "signed-out" { "Add token" } else { "Replace" }));
+    .child(browse(
+        "claude-token",
+        if claude == "signed-out" {
+            "Add token"
+        } else {
+            "Replace"
+        },
+    ));
     let set = github.is_some_and(|g| g.status == "set");
-    let login = github.and_then(|g| g.login.clone()).unwrap_or_else(|| "your account".into());
-    let github_detail = if set { format!("Token for {login}. Sessions push branches with it.") } else { "No token. Sessions can clone only the built-in fixture.".into() };
-    let github_row = row_(p, "GitHub", &github_detail, Some(if set { ("Set", Tone::Good) } else { ("Not set", Tone::Warn) })).child(browse("github-token", if set { "Replace" } else { "Add token" }));
-    body.child(card(p).child(chatgpt_row).child(divider(p)).child(claude_row).child(divider(p)).child(github_row))
-        .child(text("Sign-ins and tokens are entered in the browser, so this app never holds them.").font(SMALL).color(p.quiet).wrap())
+    let login = github
+        .and_then(|g| g.login.clone())
+        .unwrap_or_else(|| "your account".into());
+    let github_detail = if set {
+        format!("Token for {login}. Sessions push branches with it.")
+    } else {
+        "No token. Sessions can clone only the built-in fixture.".into()
+    };
+    let github_row = row_(
+        p,
+        "GitHub",
+        &github_detail,
+        Some(if set {
+            ("Set", Tone::Good)
+        } else {
+            ("Not set", Tone::Warn)
+        }),
+    )
+    .child(browse(
+        "github-token",
+        if set { "Replace" } else { "Add token" },
+    ));
+    body.child(
+        card(p)
+            .child(chatgpt_row)
+            .child(divider(p))
+            .child(claude_row)
+            .child(divider(p))
+            .child(github_row),
+    )
+    .child(
+        text("Sign-ins and tokens are entered in the browser, so this app never holds them.")
+            .font(SMALL)
+            .color(p.quiet)
+            .wrap(),
+    )
 }
 
 fn instructions(s: &State, body: El, p: &Palette) -> El {
@@ -444,21 +705,41 @@ fn instructions(s: &State, body: El, p: &Palette) -> El {
     let field = text_input(&s.instructions, crate::theme::CODE.lh(20.0))
         .key("instructions")
         .label("Instructions")
-        .placeholder("Prefer small commits. Run the tests before you finish.", p.quiet)
+        .placeholder(
+            "Prefer small commits. Run the tests before you finish.",
+            p.quiet,
+        )
         .color(p.ink)
         .w_full()
         .on_edit(|s: &mut State| {
             s.saved = false;
             &mut s.instructions
         });
-    let boxed = col().w_full().min_h(200.0).padding(12.0).radius(RADIUS).fill(p.surface).border(1.0, p.line_strong).child(field);
+    let boxed = col()
+        .w_full()
+        .min_h(200.0)
+        .padding(12.0)
+        .radius(RADIUS)
+        .fill(p.surface)
+        .border(1.0, p.line_strong)
+        .child(field);
     let mut actions = row().w_full().gap(10.0).center_y().child(el().grow(1.0));
     if s.saved && !changed {
-        actions = actions.child(row().gap(5.0).center_y().child(icon(&icons::CHECK, 13.0).color(p.quiet)).child(text("Saved").font(META).color(p.quiet)));
+        actions = actions.child(
+            row()
+                .gap(5.0)
+                .center_y()
+                .child(icon(&icons::CHECK, 13.0).color(p.quiet))
+                .child(text("Saved").font(META).color(p.quiet)),
+        );
     }
     let on = changed && !s.saving;
     let mut save = button("save-instructions", "Save", true, p);
-    save = if on { save.on_press(|s: &mut State| s.save_instructions()) } else { save.opacity(0.5) };
+    save = if on {
+        save.on_press(|s: &mut State| s.save_instructions())
+    } else {
+        save.opacity(0.5)
+    };
     let mut body = body.child(intro("Added to the agent's AGENTS.md when a session starts or resumes. Running sessions keep what they started with.", p)).child(boxed).child(actions.child(save));
     if !s.problem.is_empty() {
         body = body.child(notice(&s.problem, p));
@@ -467,13 +748,20 @@ fn instructions(s: &State, body: El, p: &Palette) -> El {
 }
 
 fn skills(s: &State, body: El, p: &Palette) -> El {
-    let Some(settings) = &s.settings else { return body };
+    let Some(settings) = &s.settings else {
+        return body;
+    };
     let mut body = body;
     if let Some(style) = &settings.claude_style {
         body = body.child(card(p).child(row_(p, "Claude output style", style, None)));
     }
     if settings.sources.is_empty() {
-        body = body.child(card(p).child(row_(p, "No skills", "Add a GitHub repository with skills to install them in new sessions.", None)));
+        body = body.child(card(p).child(row_(
+            p,
+            "No skills",
+            "Add a GitHub repository with skills to install them in new sessions.",
+            None,
+        )));
     }
     for source in &settings.sources {
         let on = source.skills.iter().filter(|x| x.enabled).count();
@@ -486,12 +774,29 @@ fn skills(s: &State, body: El, p: &Palette) -> El {
                 .center_y()
                 .fill(p.sunken)
                 .child(text(source.id.clone()).font(ROW_STRONG).color(p.ink))
-                .child(text(source.reference.as_ref().map_or(String::new(), |r| format!("@{r}"))).font(META).color(p.quiet))
+                .child(
+                    text(
+                        source
+                            .reference
+                            .as_ref()
+                            .map_or(String::new(), |r| format!("@{r}")),
+                    )
+                    .font(META)
+                    .color(p.quiet),
+                )
                 .child(el().grow(1.0))
-                .child(text(format!("{on} of {}", source.skills.len())).font(META).color(p.quiet)),
+                .child(
+                    text(format!("{on} of {}", source.skills.len()))
+                        .font(META)
+                        .color(p.quiet),
+                ),
         );
         for skill in &source.skills {
-            let mut title = row().gap(6.0).center_y().child(text(skill.name.clone()).font(crate::theme::CODE).color(p.ink));
+            let mut title = row().gap(6.0).center_y().child(
+                text(skill.name.clone())
+                    .font(crate::theme::CODE)
+                    .color(p.ink),
+            );
             if skill.manual {
                 title = title.child(text("manual").font(SMALL).color(p.quiet));
             }
@@ -502,7 +807,20 @@ fn skills(s: &State, body: El, p: &Palette) -> El {
                 .gap(12.0)
                 .center_y()
                 .border_sides([1.0, 0.0, 0.0, 0.0], p.line)
-                .child(col().grow(1.0).shrink().min_w(0.0).gap(2.0).child(title).child(text(skill.description.clone()).font(META).color(p.muted).max_lines(2)))
+                .child(
+                    col()
+                        .grow(1.0)
+                        .shrink()
+                        .min_w(0.0)
+                        .gap(2.0)
+                        .child(title)
+                        .child(
+                            text(skill.description.clone())
+                                .font(META)
+                                .color(p.muted)
+                                .max_lines(2),
+                        ),
+                )
                 .child(switch(skill.enabled, p));
             if !skill.enabled {
                 r = r.opacity(0.6);
@@ -511,22 +829,54 @@ fn skills(s: &State, body: El, p: &Palette) -> El {
         }
         body = body.child(c);
     }
-    body.child(row().w_full().child(el().grow(1.0)).child(button("skills-browser", "Manage in the browser", false, p).on_press(|s: &mut State| s.browse("skills"))))
+    body.child(
+        row().w_full().child(el().grow(1.0)).child(
+            button("skills-browser", "Manage in the browser", false, p)
+                .on_press(|s: &mut State| s.browse("skills")),
+        ),
+    )
 }
 
 /// A read-only switch, as the web draws its skill toggles.
 fn switch(on: bool, p: &Palette) -> El {
-    let track = row().w(30.0).h(18.0).radius(9.0).px(2.0).center_y().fill(if on { p.accent } else { p.line_strong });
+    let track = row()
+        .w(30.0)
+        .h(18.0)
+        .radius(9.0)
+        .px(2.0)
+        .center_y()
+        .fill(if on { p.accent } else { p.line_strong });
     let knob = el().size(14.0, 14.0).radius(7.0).fill(p.button_ink);
-    if on { track.child(el().grow(1.0)).child(knob) } else { track.child(knob) }.role("switch").label(if on { "On" } else { "Off" })
+    if on {
+        track.child(el().grow(1.0)).child(knob)
+    } else {
+        track.child(knob)
+    }
+    .role("switch")
+    .label(if on { "On" } else { "Off" })
 }
 
 fn repositories(s: &State, body: El, p: &Palette) -> El {
     let mut c = card(p);
     match &s.repos {
-        None if s.problem.is_empty() => c = c.child(col().w_full().px(16.0).py(14.0).child(el().w_frac(0.5).h(12.0).radius(6.0).fill(p.raised))),
+        None if s.problem.is_empty() => {
+            c = c.child(
+                col()
+                    .w_full()
+                    .px(16.0)
+                    .py(14.0)
+                    .child(el().w_frac(0.5).h(12.0).radius(6.0).fill(p.raised)),
+            )
+        }
         None => {}
-        Some(list) if list.is_empty() => c = c.child(row_(p, "No defaults", &format!("Every new session starts at {DEFAULT_SIZE}."), None)),
+        Some(list) if list.is_empty() => {
+            c = c.child(row_(
+                p,
+                "No defaults",
+                &format!("Every new session starts at {DEFAULT_SIZE}."),
+                None,
+            ))
+        }
         Some(list) => {
             for (i, item) in list.iter().enumerate() {
                 if i > 0 {
@@ -534,10 +884,38 @@ fn repositories(s: &State, body: El, p: &Palette) -> El {
                 }
                 let repo = item.repo.clone();
                 let busy = s.busy_repo.as_deref() == Some(item.repo.as_str());
-                let mut clear = button(&format!("clear:{}", item.repo), "Clear", false, p).label(&format!("Clear {}", item.repo));
-                clear = if s.busy_repo.is_some() { clear.opacity(0.5) } else { clear.on_press(move |s: &mut State| s.clear_repo(repo.clone())) };
-                let size = row().h(28.0).px(10.0).radius(RADIUS_MD).center().border(1.0, p.line).child(text(item.size.clone()).font(crate::theme::CODE).color(p.ink));
-                c = c.child(row_(p, &item.repo, if busy { "Clearing…" } else { "New sessions start at this size" }, None).child(size).child(clear));
+                let mut clear = button(&format!("clear:{}", item.repo), "Clear", false, p)
+                    .label(&format!("Clear {}", item.repo));
+                clear = if s.busy_repo.is_some() {
+                    clear.opacity(0.5)
+                } else {
+                    clear.on_press(move |s: &mut State| s.clear_repo(repo.clone()))
+                };
+                let size = row()
+                    .h(28.0)
+                    .px(10.0)
+                    .radius(RADIUS_MD)
+                    .center()
+                    .border(1.0, p.line)
+                    .child(
+                        text(item.size.clone())
+                            .font(crate::theme::CODE)
+                            .color(p.ink),
+                    );
+                c = c.child(
+                    row_(
+                        p,
+                        &item.repo,
+                        if busy {
+                            "Clearing…"
+                        } else {
+                            "New sessions start at this size"
+                        },
+                        None,
+                    )
+                    .child(size)
+                    .child(clear),
+                );
             }
         }
     }
@@ -545,7 +923,12 @@ fn repositories(s: &State, body: El, p: &Palette) -> El {
     if !s.problem.is_empty() {
         body = body.child(notice(&s.problem, p));
     }
-    body.child(row().w_full().child(el().grow(1.0)).child(button("repos-browser", "Set a size in the browser", false, p).on_press(|s: &mut State| s.browse("repositories"))))
+    body.child(
+        row().w_full().child(el().grow(1.0)).child(
+            button("repos-browser", "Set a size in the browser", false, p)
+                .on_press(|s: &mut State| s.browse("repositories")),
+        ),
+    )
 }
 
 fn browser_page(body: El, words: &str, page: &'static str, p: &Palette) -> El {
@@ -573,8 +956,18 @@ fn running(s: &State, body: El, p: &Palette) -> El {
 }
 
 fn signed_in(s: &State, body: El, p: &Palette) -> El {
-    let email = s.settings.as_ref().and_then(|x| x.email.clone()).unwrap_or_else(|| "Unknown account".into());
-    let host = s.base.as_deref().unwrap_or("").trim_start_matches("https://").trim_start_matches("http://").to_string();
+    let email = s
+        .settings
+        .as_ref()
+        .and_then(|x| x.email.clone())
+        .unwrap_or_else(|| "Unknown account".into());
+    let host = s
+        .base
+        .as_deref()
+        .unwrap_or("")
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .to_string();
     body.child(card(p).child(row_(p, &email, "Signed in through Cloudflare Access.", None).child(button("sign-out", "Sign out", false, p).on_press(|s: &mut State| s.sign_out()))))
         .child(text(format!("Signing out forgets this Mac's sign-in to {host}. The next open signs in again in the browser.")).font(SMALL).color(p.quiet).wrap())
 }
@@ -589,7 +982,15 @@ fn sample(s: &mut State) {
         path: String::new(),
         reference: (!reference.is_empty()).then(|| reference.into()),
         commit: None,
-        skills: skills.iter().map(|(n, d, m, e)| api::Skill { name: (*n).into(), description: (*d).into(), manual: *m, enabled: *e }).collect(),
+        skills: skills
+            .iter()
+            .map(|(n, d, m, e)| api::Skill {
+                name: (*n).into(),
+                description: (*d).into(),
+                manual: *m,
+                enabled: *e,
+            })
+            .collect(),
     };
     s.settings = Some(api::Settings {
         instructions: "Prefer small commits. Run the tests before you finish.\nKeep pull requests under 400 lines.".into(),
@@ -610,13 +1011,35 @@ fn sample(s: &mut State) {
         running: 2,
         max_running: 4,
     });
-    s.instructions = TextEdit::new(&s.settings.as_ref().map_or(String::new(), |x| x.instructions.clone()));
+    s.instructions = TextEdit::new(
+        &s.settings
+            .as_ref()
+            .map_or(String::new(), |x| x.instructions.clone()),
+    );
     s.accounts = [
-        Some(Credential { status: "signed-in".into(), login: None }),
-        Some(Credential { status: "expiring".into(), login: None }),
-        Some(Credential { status: "set".into(), login: Some("acme-bot".into()) }),
+        Some(Credential {
+            status: "signed-in".into(),
+            login: None,
+        }),
+        Some(Credential {
+            status: "expiring".into(),
+            login: None,
+        }),
+        Some(Credential {
+            status: "set".into(),
+            login: Some("acme-bot".into()),
+        }),
     ];
-    s.repos = Some(vec![RepoSize { repo: "acme/web".into(), size: "standard-2".into() }, RepoSize { repo: "acme/api".into(), size: "standard-4".into() }]);
+    s.repos = Some(vec![
+        RepoSize {
+            repo: "acme/web".into(),
+            size: "standard-2".into(),
+        },
+        RepoSize {
+            repo: "acme/api".into(),
+            size: "standard-4".into(),
+        },
+    ]);
 }
 
 fn at(s: &mut State, section: Section) {
@@ -628,7 +1051,9 @@ pub const SCENES: &[(&str, fn(&mut State))] = &[
     ("accounts", |s| at(s, Section::Accounts)),
     ("instructions", |s| {
         at(s, Section::Instructions);
-        s.instructions = TextEdit::new("Prefer small commits. Run the tests before you finish.\nKeep pull requests under 400 lines.\nWrite the plan before the code.");
+        s.instructions = TextEdit::new(
+            "Prefer small commits. Run the tests before you finish.\nKeep pull requests under 400 lines.\nWrite the plan before the code.",
+        );
     }),
     ("skills", |s| at(s, Section::Skills)),
     ("repositories", |s| at(s, Section::Repositories)),

@@ -40,20 +40,42 @@ pub struct Live<F> {
     _stop: Sender<()>,
 }
 
-pub fn start<F: Send + 'static>(base: &str, path: &str, decode: fn(&str) -> Option<F>, wake: impl Fn() + Send + 'static) -> Live<F> {
+pub fn start<F: Send + 'static>(
+    base: &str,
+    path: &str,
+    decode: fn(&str) -> Option<F>,
+    wake: impl Fn() + Send + 'static,
+) -> Live<F> {
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     let (in_tx, in_rx) = mpsc::channel::<Inbound<F>>();
-    let url = format!("{}{}", base.trim_end_matches('/').replacen("http", "ws", 1), path);
+    let url = format!(
+        "{}{}",
+        base.trim_end_matches('/').replacen("http", "ws", 1),
+        path
+    );
     let base = base.to_string();
-    thread::Builder::new().name("scotty-live".into()).spawn(move || run(&base, &url, decode, &stop_rx, &in_tx, &wake)).expect("spawn a socket thread");
-    Live { inbound: in_rx, _stop: stop_tx }
+    thread::Builder::new()
+        .name("scotty-live".into())
+        .spawn(move || run(&base, &url, decode, &stop_rx, &in_tx, &wake))
+        .expect("spawn a socket thread");
+    Live {
+        inbound: in_rx,
+        _stop: stop_tx,
+    }
 }
 
 const READ_SLICE: Duration = Duration::from_millis(50);
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
-fn run<F>(base: &str, url: &str, decode: fn(&str) -> Option<F>, stop: &Receiver<()>, out: &Sender<Inbound<F>>, wake: &impl Fn()) {
+fn run<F>(
+    base: &str,
+    url: &str,
+    decode: fn(&str) -> Option<F>,
+    stop: &Receiver<()>,
+    out: &Sender<Inbound<F>>,
+    wake: &impl Fn(),
+) {
     let send = |m: Inbound<F>| -> bool {
         let ok = out.send(m).is_ok();
         if ok {
@@ -120,11 +142,20 @@ enum Refused {
 /// No `Origin` header: the Worker refuses a foreign one on live sockets.
 fn connect(base: &str, url: &str, token: &str) -> Result<Socket, Refused> {
     let other = |e: String| Refused::Other(e);
-    let mut request = url.into_client_request().map_err(|e| other(e.to_string()))?;
+    let mut request = url
+        .into_client_request()
+        .map_err(|e| other(e.to_string()))?;
     let headers = request.headers_mut();
     if !token.is_empty() {
-        headers.insert("Cookie", HeaderValue::from_str(&format!("CF_Authorization={token}")).map_err(|e| other(e.to_string()))?);
-        headers.insert("cf-access-token", HeaderValue::from_str(token).map_err(|e| other(e.to_string()))?);
+        headers.insert(
+            "Cookie",
+            HeaderValue::from_str(&format!("CF_Authorization={token}"))
+                .map_err(|e| other(e.to_string()))?,
+        );
+        headers.insert(
+            "cf-access-token",
+            HeaderValue::from_str(token).map_err(|e| other(e.to_string()))?,
+        );
     }
     let (socket, _) = tungstenite::connect(request).map_err(|e| match e {
         tungstenite::Error::Http(response) => {
@@ -144,7 +175,8 @@ fn connect(base: &str, url: &str, token: &str) -> Result<Socket, Refused> {
         _ => return Err(other("unexpected stream".into())),
     };
     tcp.set_nodelay(true).map_err(|e| other(e.to_string()))?;
-    tcp.set_read_timeout(Some(READ_SLICE)).map_err(|e| other(e.to_string()))?;
+    tcp.set_read_timeout(Some(READ_SLICE))
+        .map_err(|e| other(e.to_string()))?;
     Ok(socket)
 }
 
@@ -154,7 +186,12 @@ enum End {
     Lost(String),
 }
 
-fn serve<F>(socket: &mut Socket, decode: fn(&str) -> Option<F>, stopped: &impl Fn() -> bool, send: &impl Fn(Inbound<F>) -> bool) -> End {
+fn serve<F>(
+    socket: &mut Socket,
+    decode: fn(&str) -> Option<F>,
+    stopped: &impl Fn() -> bool,
+    send: &impl Fn(Inbound<F>) -> bool,
+) -> End {
     loop {
         if stopped() {
             return End::Quit;
@@ -175,7 +212,11 @@ fn serve<F>(socket: &mut Socket, decode: fn(&str) -> Option<F>, stopped: &impl F
                 };
             }
             Ok(_) => {}
-            Err(tungstenite::Error::Io(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+            Err(tungstenite::Error::Io(e))
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
             Err(e) => return End::Lost(e.to_string()),
         }
     }

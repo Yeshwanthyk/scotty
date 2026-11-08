@@ -74,9 +74,17 @@ pub struct Display {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Origin {
-    Hook { connection: String, delivery: String },
-    Api { key: String },
-    Automation { automation: String, run: String },
+    Hook {
+        connection: String,
+        delivery: String,
+    },
+    Api {
+        key: String,
+    },
+    Automation {
+        automation: String,
+        run: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -136,7 +144,8 @@ impl Session {
         self.lifecycle() == Some("stopped")
     }
     pub fn running(&self) -> bool {
-        matches!(self.authority, Authority::Transitioning { .. }) || self.lifecycle() == Some("running")
+        matches!(self.authority, Authority::Transitioning { .. })
+            || self.lifecycle() == Some("running")
     }
     /// `mine`: made here or through the API; the rest came from a hook or an automation.
     pub fn mine(&self) -> bool {
@@ -166,13 +175,19 @@ impl Status {
     pub fn of(s: &Session, seen: Option<u64>, current: bool) -> Status {
         match &s.authority {
             Authority::Transitioning { .. } => Status::Starting,
-            Authority::Stable { lifecycle, stop, .. } => {
+            Authority::Stable {
+                lifecycle, stop, ..
+            } => {
                 if lifecycle == "failed" {
                     Status::Failed
                 } else if s.progress.working {
                     Status::Working
                 } else if lifecycle == "stopped" {
-                    if stop.as_ref().is_some_and(|x| x.reason == "idle") { Status::Asleep } else { Status::Stopped }
+                    if stop.as_ref().is_some_and(|x| x.reason == "idle") {
+                        Status::Asleep
+                    } else {
+                        Status::Stopped
+                    }
                 } else if !current && seen.is_some_and(|seen| s.progress.turns > seen) {
                     Status::Unseen
                 } else {
@@ -199,7 +214,9 @@ impl Status {
 }
 
 pub fn stop_label(stop: Option<&Stop>) -> String {
-    let Some(stop) = stop else { return "Stopped".into() };
+    let Some(stop) = stop else {
+        return "Stopped".into();
+    };
     match stop.reason.as_str() {
         "user" => "Stopped by you".into(),
         "ended" => "Ended by an automation".into(),
@@ -218,7 +235,9 @@ pub fn stop_label(stop: Option<&Stop>) -> String {
 }
 
 pub fn stop_sentence(stop: Option<&Stop>) -> String {
-    let Some(stop) = stop else { return "This session stopped.".into() };
+    let Some(stop) = stop else {
+        return "This session stopped.".into();
+    };
     match stop.reason.as_str() {
         "user" => "You stopped this session.".into(),
         "ended" => "An automation ended this session.".into(),
@@ -230,7 +249,10 @@ pub fn stop_sentence(stop: Option<&Stop>) -> String {
         "exited" => "The container exited on its own.".into(),
         "agent" => "The agent exited.".into(),
         "deploy" => "The container was replaced, so work since the last save is gone.".into(),
-        "cap" => format!("{} sessions are running; stop one or raise maxRunning.", stop.max.map_or("undefined".to_string(), |m| m.to_string())),
+        "cap" => format!(
+            "{} sessions are running; stop one or raise maxRunning.",
+            stop.max.map_or("undefined".to_string(), |m| m.to_string())
+        ),
         "gone" => "The container was lost.".into(),
         _ => "This session stopped.".into(),
     }
@@ -241,7 +263,9 @@ pub fn failure_sentence(failure: Option<&Failure>) -> &'static str {
         Some("container_start" | "container_timeout") => "The container didn't start.",
         Some("workspace" | "workspace_timeout") => "The workspace couldn't be prepared.",
         Some("signin_required") => "The agent needs you to sign in again in Settings.",
-        Some("start" | "start_failed" | "dial_timeout" | "redial_timeout") => "The agent didn't start.",
+        Some("start" | "start_failed" | "dial_timeout" | "redial_timeout") => {
+            "The agent didn't start."
+        }
         Some("protocol") => "The agent sent something Scotty couldn't read.",
         _ => "This session failed to start.",
     }
@@ -322,11 +346,26 @@ pub struct TurnFile {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Item {
-    Text { id: String, text: String, #[serde(rename = "final")] done: bool },
-    Thinking { id: String, text: String },
+    Text {
+        id: String,
+        text: String,
+        #[serde(rename = "final")]
+        done: bool,
+    },
+    Thinking {
+        id: String,
+        text: String,
+    },
     Tool(Tool),
-    Plan { id: String, steps: Vec<PlanStep> },
-    Notice { id: String, text: String, tone: String },
+    Plan {
+        id: String,
+        steps: Vec<PlanStep>,
+    },
+    Notice {
+        id: String,
+        text: String,
+        tone: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -362,7 +401,10 @@ pub struct PlanStep {
 impl Item {
     pub fn id(&self) -> &str {
         match self {
-            Item::Text { id, .. } | Item::Thinking { id, .. } | Item::Plan { id, .. } | Item::Notice { id, .. } => id,
+            Item::Text { id, .. }
+            | Item::Thinking { id, .. }
+            | Item::Plan { id, .. }
+            | Item::Notice { id, .. } => id,
             Item::Tool(t) => &t.id,
         }
     }
@@ -452,15 +494,28 @@ pub type Answer = Result<String, Failed>;
 /// One request, made on its own thread: send it with the saved token and hand back the body or why
 /// it failed. No token, or Access refusing it (401, 403, a redirect), answers 401: the window then
 /// shows its sign-in screen.
-pub fn call<T: Send + 'static>(base: String, method: &'static str, path: String, body: Option<String>, tag: T, out: Sender<(T, Answer)>, wake: impl Fn() + Send + 'static) {
+pub fn call<T: Send + 'static>(
+    base: String,
+    method: &'static str,
+    path: String,
+    body: Option<String>,
+    tag: T,
+    out: Sender<(T, Answer)>,
+    wake: impl Fn() + Send + 'static,
+) {
     std::thread::Builder::new()
         .name("scotty-http".into())
         .spawn(move || {
             let key = (method == "POST" && path == "/api/sessions").then(uuid);
-            let answer = request(&base, method, &path, body.as_deref(), key.as_deref()).map_err(|e| match e {
-                Refused::SignIn => Failed { status: Some(401), message: "Sign in to reach Scotty.".into() },
-                Refused::Failed(status, message) => Failed { status, message },
-            });
+            let answer = request(&base, method, &path, body.as_deref(), key.as_deref()).map_err(
+                |e| match e {
+                    Refused::SignIn => Failed {
+                        status: Some(401),
+                        message: "Sign in to reach Scotty.".into(),
+                    },
+                    Refused::Failed(status, message) => Failed { status, message },
+                },
+            );
             if out.send((tag, answer)).is_ok() {
                 wake();
             }
@@ -473,16 +528,30 @@ enum Refused {
     Failed(Option<u16>, String),
 }
 
-fn request(base: &str, method: &str, path: &str, body: Option<&str>, key: Option<&str>) -> Result<String, Refused> {
+fn request(
+    base: &str,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    key: Option<&str>,
+) -> Result<String, Refused> {
     let token = crate::signin::token(base).map_err(|no| match no {
         crate::signin::NoToken::SignIn => Refused::SignIn,
         crate::signin::NoToken::Bad(why) => Refused::Failed(None, why),
     })?;
-    let agent = ureq::AgentBuilder::new().redirects(0).timeout(std::time::Duration::from_secs(30)).user_agent(concat!("scotty-mac/", env!("CARGO_PKG_VERSION"))).build();
+    let agent = ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent(concat!("scotty-mac/", env!("CARGO_PKG_VERSION")))
+        .build();
     let url = format!("{}{}", base.trim_end_matches('/'), path);
-    let mut req = agent.request(method, &url).set("accept", "application/json");
+    let mut req = agent
+        .request(method, &url)
+        .set("accept", "application/json");
     if !token.is_empty() {
-        req = req.set("cf-access-token", &token).set("Cookie", &format!("CF_Authorization={token}"));
+        req = req
+            .set("cf-access-token", &token)
+            .set("Cookie", &format!("CF_Authorization={token}"));
     }
     if let Some(key) = key {
         req = req.set("idempotency-key", key);
@@ -497,13 +566,23 @@ fn request(base: &str, method: &str, path: &str, body: Option<&str>, key: Option
     };
     match result {
         Ok(r) if (300..400).contains(&r.status()) => Err(refused()),
-        Ok(r) => r.into_string().map_err(|e| Refused::Failed(None, e.to_string())),
+        Ok(r) => r
+            .into_string()
+            .map_err(|e| Refused::Failed(None, e.to_string())),
         Err(ureq::Error::Status(code, _)) if matches!(code, 401 | 403) => Err(refused()),
         Err(ureq::Error::Status(code, r)) => {
             let text = r.into_string().unwrap_or_default();
-            Err(Refused::Failed(Some(code), serde_json::from_str::<ErrorBody>(&text).map(|e| e.error.message).unwrap_or_else(|_| format!("Request failed ({code})"))))
+            Err(Refused::Failed(
+                Some(code),
+                serde_json::from_str::<ErrorBody>(&text)
+                    .map(|e| e.error.message)
+                    .unwrap_or_else(|_| format!("Request failed ({code})")),
+            ))
         }
-        Err(e) => Err(Refused::Failed(None, format!("Can't reach Scotty: {}", short(&e.to_string())))),
+        Err(e) => Err(Refused::Failed(
+            None,
+            format!("Can't reach Scotty: {}", short(&e.to_string())),
+        )),
     }
 }
 
@@ -515,13 +594,23 @@ fn short(s: &str) -> &str {
 pub fn uuid() -> String {
     use std::io::Read;
     let mut b = [0u8; 16];
-    if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).is_err() {
+    if std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut b))
+        .is_err()
+    {
         b = (time::now_ms().to_bits() as u128 ^ u128::from(std::process::id()) << 64).to_le_bytes();
     }
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
     let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
-    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
 }
 
 /// A JSON string literal for `text`.

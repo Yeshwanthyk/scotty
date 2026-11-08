@@ -26,7 +26,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-use rune::{App, AppHandle, AppSpec, Key, KeyEvent, TextEdit, Tx, WindowOptions, WindowSpec, Waker};
+use rune::{
+    App, AppHandle, AppSpec, Key, KeyEvent, TextEdit, Tx, Waker, WindowOptions, WindowSpec,
+};
 use rune_kit::shell::TabDragState;
 
 use api::{Answer, Conversation, ListFrame, Session, SessionFrame, Status};
@@ -90,7 +92,9 @@ impl Conn {
     }
 
     pub fn turns(&self) -> &[api::Turn] {
-        self.conversation.as_ref().map_or(&[], |c| c.turns.as_slice())
+        self.conversation
+            .as_ref()
+            .map_or(&[], |c| c.turns.as_slice())
     }
 }
 
@@ -112,7 +116,12 @@ pub enum Filter {
 }
 
 impl Filter {
-    pub const ALL: [(Filter, &'static str); 4] = [(Filter::All, "All"), (Filter::Mine, "Mine"), (Filter::Automations, "Automations"), (Filter::Running, "Running")];
+    pub const ALL: [(Filter, &'static str); 4] = [
+        (Filter::All, "All"),
+        (Filter::Mine, "Mine"),
+        (Filter::Automations, "Automations"),
+        (Filter::Running, "Running"),
+    ];
 
     pub fn matches(self, s: &Session) -> bool {
         match self {
@@ -130,9 +139,16 @@ pub enum Ask {
     /// Is the session still there? (Its socket is down.)
     Check(String),
     /// Steer or interrupt, with the input it carried.
-    Write { id: String, action: &'static str, input: String },
+    Write {
+        id: String,
+        action: &'static str,
+        input: String,
+    },
     /// Stop, resume or delete.
-    Act { id: String, action: &'static str },
+    Act {
+        id: String,
+        action: &'static str,
+    },
     Create,
 }
 
@@ -171,7 +187,8 @@ struct Signing {
 
 impl Drop for Signing {
     fn drop(&mut self) {
-        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -298,13 +315,25 @@ impl State {
             return;
         }
         let wake = self.wake.clone();
-        api::call(server.url.clone(), method, path, body, tag, self.http.0.clone(), move || wake());
+        api::call(
+            server.url.clone(),
+            method,
+            path,
+            body,
+            tag,
+            self.http.0.clone(),
+            move || wake(),
+        );
     }
 
     // Sessions and tabs.
 
     pub fn session(&self, id: &str) -> Option<&Session> {
-        self.conns.iter().find(|c| c.id == id).and_then(|c| c.session.as_ref()).or_else(|| self.sessions.iter().find(|s| s.id() == id))
+        self.conns
+            .iter()
+            .find(|c| c.id == id)
+            .and_then(|c| c.session.as_ref())
+            .or_else(|| self.sessions.iter().find(|s| s.id() == id))
     }
 
     pub fn status_of(&self, s: &Session) -> Status {
@@ -313,7 +342,8 @@ impl State {
     }
 
     pub fn title_of(&self, id: &str) -> String {
-        self.session(id).map_or_else(|| "Session".to_string(), |s| s.display.title.clone())
+        self.session(id)
+            .map_or_else(|| "Session".to_string(), |s| s.display.title.clone())
     }
 
     pub fn current(&self) -> Option<&str> {
@@ -348,13 +378,22 @@ impl State {
             conn.session = self.sessions.iter().find(|s| s.id() == id).cloned();
             if let (Some(server), Some(_), Auth::Ready) = (&self.server, &self.waker, &self.auth) {
                 let wake = self.wake.clone();
-                conn.live = Some(live::start(&server.url, &format!("/api/sessions/{}/live", encode(id)), decode_session, move || wake()));
+                conn.live = Some(live::start(
+                    &server.url,
+                    &format!("/api/sessions/{}/live", encode(id)),
+                    decode_session,
+                    move || wake(),
+                ));
             } else {
                 conn.link = Link::Open;
             }
             self.conns.push(conn);
         }
-        let at = if self.tabs.is_empty() { 0 } else { (self.active + 1).min(self.tabs.len()) };
+        let at = if self.tabs.is_empty() {
+            0
+        } else {
+            (self.active + 1).min(self.tabs.len())
+        };
         self.tabs.insert(at, id.to_string());
         self.active = at;
         self.mark_seen();
@@ -394,8 +433,12 @@ impl State {
 
     /// The session on screen has been seen up to its last turn.
     fn mark_seen(&mut self) {
-        let Some(id) = self.current().map(str::to_string) else { return };
-        let Some(turns) = self.session(&id).map(|s| s.progress.turns) else { return };
+        let Some(id) = self.current().map(str::to_string) else {
+            return;
+        };
+        let Some(turns) = self.session(&id).map(|s| s.progress.turns) else {
+            return;
+        };
         if self.seen.get(&id) == Some(&turns) {
             return;
         }
@@ -410,7 +453,9 @@ impl State {
     /// Steer with what's typed, or interrupt the turn. The same input retried keeps its `req`.
     pub fn write(&mut self, action: &'static str) {
         let Some(conn) = self.conn_mut() else { return };
-        let Some(conversation) = &conn.conversation else { return };
+        let Some(conversation) = &conn.conversation else {
+            return;
+        };
         if conn.busy {
             return;
         }
@@ -429,11 +474,25 @@ impl State {
         conn.error.clear();
         let id = conn.id.clone();
         let body = if action == "steer" {
-            format!(r#"{{"text":{},"turn":{},"req":{}}}"#, api::json_str(&text), api::json_str(&turn), api::json_str(&req))
+            format!(
+                r#"{{"text":{},"turn":{},"req":{}}}"#,
+                api::json_str(&text),
+                api::json_str(&turn),
+                api::json_str(&req)
+            )
         } else {
-            format!(r#"{{"turn":{},"req":{}}}"#, api::json_str(&turn), api::json_str(&req))
+            format!(
+                r#"{{"turn":{},"req":{}}}"#,
+                api::json_str(&turn),
+                api::json_str(&req)
+            )
         };
-        self.ask("POST", format!("/api/sessions/{}/{action}", encode(&id)), Some(body), Ask::Write { id, action, input });
+        self.ask(
+            "POST",
+            format!("/api/sessions/{}/{action}", encode(&id)),
+            Some(body),
+            Ask::Write { id, action, input },
+        );
     }
 
     /// Stop, resume or delete the session on screen.
@@ -450,7 +509,11 @@ impl State {
         let id = conn.id.clone();
         let (method, path, body) = match action {
             "delete" => ("DELETE", format!("/api/sessions/{}", encode(&id)), None),
-            _ => ("POST", format!("/api/sessions/{}/{action}", encode(&id)), Some("{}".to_string())),
+            _ => (
+                "POST",
+                format!("/api/sessions/{}/{action}", encode(&id)),
+                Some("{}".to_string()),
+            ),
         };
         self.ask(method, path, body, Ask::Act { id, action });
     }
@@ -468,8 +531,22 @@ impl State {
         if self.server.is_none() {
             return;
         }
-        let repo = self.repo_filter.clone().or_else(|| self.conn().and_then(|c| c.session.as_ref()).map(|s| s.display.repository.clone())).unwrap_or_default();
-        self.new_session = Some(Draft { prompt: TextEdit::new(""), repo: TextEdit::new(&repo), agent: "codex", busy: false, error: String::new() });
+        let repo = self
+            .repo_filter
+            .clone()
+            .or_else(|| {
+                self.conn()
+                    .and_then(|c| c.session.as_ref())
+                    .map(|s| s.display.repository.clone())
+            })
+            .unwrap_or_default();
+        self.new_session = Some(Draft {
+            prompt: TextEdit::new(""),
+            repo: TextEdit::new(&repo),
+            agent: "codex",
+            busy: false,
+            error: String::new(),
+        });
     }
 
     /// The home composer's Return: the New session sheet, holding what was typed.
@@ -484,7 +561,9 @@ impl State {
     }
 
     pub fn create(&mut self) {
-        let Some(draft) = self.new_session.as_mut() else { return };
+        let Some(draft) = self.new_session.as_mut() else {
+            return;
+        };
         let prompt = draft.prompt.text.trim().to_string();
         let repo = draft.repo.text.trim().to_string();
         if prompt.is_empty() || draft.busy {
@@ -525,17 +604,29 @@ impl State {
     /// Start the list socket and every open tab's socket, and read the list: at open, and again
     /// once a sign-in lands, so tabs open before it came due keep their place.
     fn connect(&mut self) {
-        let (Some(server), Some(_)) = (&self.server, &self.waker) else { return };
+        let (Some(server), Some(_)) = (&self.server, &self.waker) else {
+            return;
+        };
         if self.auth != Auth::Ready {
             return;
         }
         let url = server.url.clone();
         let wake = self.wake.clone();
-        self.list_live = Some(live::start(&url, "/api/sessions/live", decode_list, move || wake()));
+        self.list_live = Some(live::start(
+            &url,
+            "/api/sessions/live",
+            decode_list,
+            move || wake(),
+        ));
         self.list_link = Link::Connecting;
         for conn in &mut self.conns {
             let wake = self.wake.clone();
-            conn.live = Some(live::start(&url, &format!("/api/sessions/{}/live", encode(&conn.id)), decode_session, move || wake()));
+            conn.live = Some(live::start(
+                &url,
+                &format!("/api/sessions/{}/live", encode(&conn.id)),
+                decode_session,
+                move || wake(),
+            ));
             conn.link = Link::Connecting;
         }
         self.ask("GET", "/api/sessions".into(), None, Ask::List);
@@ -557,7 +648,9 @@ impl State {
 
     /// Whether the Keychain holds a sign-in for this Scotty that hasn't run out.
     fn saved_sign_in(&self) -> bool {
-        self.server.as_ref().is_some_and(|s| signin::token(&s.url).is_ok_and(|t| !t.is_empty()))
+        self.server
+            .as_ref()
+            .is_some_and(|s| signin::token(&s.url).is_ok_and(|t| !t.is_empty()))
     }
 
     /// The sign-in screen's button: the browser opens on this Scotty's Access page, and a thread
@@ -570,7 +663,9 @@ impl State {
             self.connect();
             return;
         }
-        let (Some(server), Some(_)) = (&self.server, &self.waker) else { return };
+        let (Some(server), Some(_)) = (&self.server, &self.waker) else {
+            return;
+        };
         let (tx, rx) = std::sync::mpsc::channel();
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (base, stop, wake) = (server.url.clone(), cancel.clone(), self.wake.clone());
@@ -582,13 +677,18 @@ impl State {
                         wake();
                     }
                 };
-                let done = signin::sign_in(&base, opened, || stop.load(std::sync::atomic::Ordering::Relaxed));
+                let done = signin::sign_in(&base, opened, || {
+                    stop.load(std::sync::atomic::Ordering::Relaxed)
+                });
                 if tx.send(SignedIn::Done(done)).is_ok() {
                     wake();
                 }
             })
             .expect("spawn the sign-in thread");
-        self.signing = Some(Signing { inbound: rx, cancel });
+        self.signing = Some(Signing {
+            inbound: rx,
+            cancel,
+        });
         self.auth = Auth::Waiting(None);
     }
 
@@ -606,7 +706,9 @@ impl State {
 
     /// What the sign-in thread said; true when the screen changes.
     fn poll_sign_in(&mut self) -> bool {
-        let Some(signing) = &self.signing else { return false };
+        let Some(signing) = &self.signing else {
+            return false;
+        };
         let mut changed = false;
         while let Ok(message) = signing.inbound.try_recv() {
             changed = true;
@@ -635,7 +737,10 @@ impl State {
                 self.address_error = None;
                 self.open(server);
             }
-            None => self.address_error = Some("That isn't an address. It looks like scotty.example.com.".into()),
+            None => {
+                self.address_error =
+                    Some("That isn't an address. It looks like scotty.example.com.".into())
+            }
         }
     }
 
@@ -737,42 +842,61 @@ impl State {
                 }
             }
             Ask::Write { id, action, input } => {
-                let Some(conn) = self.conn_by(&id) else { return };
+                let Some(conn) = self.conn_by(&id) else {
+                    return;
+                };
                 conn.busy = false;
                 match answer.map(|b| serde_json::from_str::<WriteReply>(&b).map(|r| r.status)) {
                     Ok(Ok(status)) => {
                         conn.attempt = None;
-                        conn.note = if action == "interrupt" { "Stopping this turn…".into() } else if status == "pending" { "Queued".into() } else { String::new() };
+                        conn.note = if action == "interrupt" {
+                            "Stopping this turn…".into()
+                        } else if status == "pending" {
+                            "Queued".into()
+                        } else {
+                            String::new()
+                        };
                         let sent = input.rsplit('\u{0}').next().unwrap_or("");
-                        if action == "steer" && matches!(status.as_str(), "pending" | "delivered") && conn.draft.text.trim() == sent {
+                        if action == "steer"
+                            && matches!(status.as_str(), "pending" | "delivered")
+                            && conn.draft.text.trim() == sent
+                        {
                             conn.draft.clear();
                         }
                     }
                     Ok(Err(_)) => conn.error = "Request failed".into(),
-                    Err(f) => conn.error = if f.message.is_empty() { "Request failed".into() } else { f.message },
-                }
-            }
-            Ask::Act { id, action } => {
-                match answer {
-                    Ok(_) if action == "delete" => {
-                        self.sessions.retain(|s| s.id() != id);
-                        if let Some(i) = self.tabs.iter().position(|t| *t == id) {
-                            self.close_tab(i);
-                        }
-                    }
-                    Ok(_) => {
-                        if let Some(conn) = self.conn_by(&id) {
-                            conn.busy = false;
-                        }
-                    }
                     Err(f) => {
-                        if let Some(conn) = self.conn_by(&id) {
-                            conn.busy = false;
-                            conn.error = if f.message.is_empty() { format!("Could not {action} the session") } else { f.message };
+                        conn.error = if f.message.is_empty() {
+                            "Request failed".into()
+                        } else {
+                            f.message
                         }
                     }
                 }
             }
+            Ask::Act { id, action } => match answer {
+                Ok(_) if action == "delete" => {
+                    self.sessions.retain(|s| s.id() != id);
+                    if let Some(i) = self.tabs.iter().position(|t| *t == id) {
+                        self.close_tab(i);
+                    }
+                }
+                Ok(_) => {
+                    if let Some(conn) = self.conn_by(&id) {
+                        conn.busy = false;
+                    }
+                }
+                Err(f) => {
+                    if let Some(conn) = self.conn_by(&id) {
+                        conn.busy = false;
+                        conn.error = if f.message.is_empty() {
+                            format!("Could not {action} the session")
+                        } else {
+                            f.message
+                        };
+                    }
+                }
+            },
             Ask::Create => match answer.map(|b| serde_json::from_str::<Created>(&b)) {
                 Ok(Ok(created)) => {
                     self.new_session = None;
@@ -788,7 +912,11 @@ impl State {
                 Err(f) => {
                     if let Some(d) = self.new_session.as_mut() {
                         d.busy = false;
-                        d.error = if f.message.is_empty() { "Could not create session".into() } else { f.message };
+                        d.error = if f.message.is_empty() {
+                            "Could not create session".into()
+                        } else {
+                            f.message
+                        };
                     }
                 }
             },
@@ -818,7 +946,18 @@ fn decode_session(text: &str) -> Option<SessionFrame> {
 pub fn encode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')' => (b as char).to_string(),
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => (b as char).to_string(),
             _ => format!("%{b:02X}"),
         })
         .collect()
@@ -837,7 +976,10 @@ pub fn title_of(prompt: &str) -> String {
 /// Put `text` on the clipboard.
 pub fn copy(text: &str) {
     use std::io::Write;
-    if let Ok(mut child) = std::process::Command::new("pbcopy").stdin(std::process::Stdio::piped()).spawn() {
+    if let Ok(mut child) = std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
         if let Some(stdin) = child.stdin.as_mut() {
             let _ = stdin.write_all(text.as_bytes());
         }
@@ -910,7 +1052,9 @@ fn poll(state: &mut State, _clock: f64, _tx: &mut Tx) -> bool {
                     conn.session = Some(frame.session);
                     conn.conversation = Some(frame.conversation);
                     conn.booted = booted(conn);
-                    if conn.note == "Stopping this turn…" && !conn.session.as_ref().is_some_and(|s| s.progress.working) {
+                    if conn.note == "Stopping this turn…"
+                        && !conn.session.as_ref().is_some_and(|s| s.progress.working)
+                    {
                         conn.note.clear();
                     }
                 }
@@ -918,7 +1062,12 @@ fn poll(state: &mut State, _clock: f64, _tx: &mut Tx) -> bool {
         }
     }
     for id in checks {
-        state.ask("GET", format!("/api/sessions/{}", encode(&id)), None, Ask::Check(id));
+        state.ask(
+            "GET",
+            format!("/api/sessions/{}", encode(&id)),
+            None,
+            Ask::Check(id),
+        );
     }
     while let Ok((ask, answer)) = state.http.1.try_recv() {
         signed_out |= matches!(&answer, Err(f) if f.status == Some(401));
@@ -936,11 +1085,16 @@ fn poll(state: &mut State, _clock: f64, _tx: &mut Tx) -> bool {
 
 /// The web's `booted`: set while the container boots, kept until the first turn's agent answers.
 fn booted(conn: &Conn) -> bool {
-    let Some(session) = &conn.session else { return false };
+    let Some(session) = &conn.session else {
+        return false;
+    };
     if matches!(session.authority, api::Authority::Transitioning { .. }) {
         return true;
     }
-    let waiting = session.progress.working && conn.turns().last().is_some_and(|t| t.state == api::TurnState::Streaming && t.items.is_empty() && t.assistant.is_empty());
+    let waiting = session.progress.working
+        && conn.turns().last().is_some_and(|t| {
+            t.state == api::TurnState::Streaming && t.items.is_empty() && t.assistant.is_empty()
+        });
     conn.booted && waiting
 }
 
@@ -949,7 +1103,9 @@ fn keys(state: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if state.server.is_none() || !ev.mods.cmd {
         return false;
     }
-    let Key::Command(c) = ev.key else { return false };
+    let Key::Command(c) = ev.key else {
+        return false;
+    };
     if c != 'k' && state.finder.is_some() {
         return false;
     }
@@ -962,8 +1118,14 @@ fn keys(state: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
         ',' => state.open_settings(None),
         '\\' => state.sidebar = !state.sidebar,
         'd' | '∂' if ev.mods.alt => state.panel = !state.panel,
-        'l' | 'L' if ev.mods.shift => state.set_appearance(if state.dark.get() { Appearance::Light } else { Appearance::Dark }),
-        '[' | '{' if ev.mods.shift => state.select((state.active + state.tabs.len().max(1) - 1) % state.tabs.len().max(1)),
+        'l' | 'L' if ev.mods.shift => state.set_appearance(if state.dark.get() {
+            Appearance::Light
+        } else {
+            Appearance::Dark
+        }),
+        '[' | '{' if ev.mods.shift => {
+            state.select((state.active + state.tabs.len().max(1) - 1) % state.tabs.len().max(1))
+        }
         ']' | '}' if ev.mods.shift => state.select((state.active + 1) % state.tabs.len().max(1)),
         '9' => state.select(state.tabs.len().saturating_sub(1)),
         '1'..='8' => state.select(c as usize - '1' as usize),
@@ -987,6 +1149,11 @@ fn main() {
     });
     let main = app.handle();
     let settings_app = App::new(settings::spec()).init(move || settings::State::new(Some(main)));
-    let (settings, _) = app.window(WindowSpec::from_app("settings", settings_app).options(WindowOptions { visible: false, ..Default::default() }));
+    let (settings, _) = app.window(WindowSpec::from_app("settings", settings_app).options(
+        WindowOptions {
+            visible: false,
+            ..Default::default()
+        },
+    ));
     app.init(move || State::new(Some(settings))).run();
 }
