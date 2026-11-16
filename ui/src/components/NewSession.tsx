@@ -202,8 +202,8 @@ export function NewSession() {
   const [agent, setAgent] = useState<Agent>(() =>
     read(lastAgentKey) === "claude" ? "claude" : "codex",
   );
-  // A size picked by hand, for the repository it was picked for.
-  const [picked, setPicked] = useState<{ repo: string; size: typeof Size.Type }>();
+  // An explicit size stays picked while the repository is edited.
+  const [picked, setPicked] = useState<typeof Size.Type>();
   // Shown only: the Worker applies a repository's default to a create that names no size.
   const [defaults, setDefaults] = useState<RepoDefault[]>([]);
   const [defaultsFailed, setDefaultsFailed] = useState(false);
@@ -294,7 +294,7 @@ export function NewSession() {
   const chosen: Agent = agent === "claude" && claudeReady === false ? "codex" : agent;
   const validRepo = repoPattern.test(repo.trim());
   const repoDefault = defaults.find((item) => item.repo === repo.trim().toLowerCase());
-  const own = picked?.repo === repo.trim() ? picked.size : undefined;
+  const own = picked;
   const size = own ?? repoDefault?.size ?? defaultSize;
   function pick(next: Agent) {
     if (next === "claude" && claudeReady === false) {
@@ -437,7 +437,7 @@ export function NewSession() {
               align="start"
               // Unread defaults: the Worker still applies the repository's, whatever it is.
               {...(own === undefined && defaultsFailed ? { label: "repo default" } : {})}
-              onChange={(next) => setPicked({ repo: repo.trim(), size: next })}
+              onChange={setPicked}
             />
           </Composer>
           {filled !== "" ? (

@@ -7,7 +7,7 @@ export const AgentSettings = Schema.Struct({
 });
 
 export const defaultCodexSettings: typeof AgentSettings.Type = {
-  model: "gpt-5.5",
+  model: "gpt-6.1-sol",
   effort: "medium",
 };
 
