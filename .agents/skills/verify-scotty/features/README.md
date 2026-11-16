@@ -16,6 +16,7 @@ directory. Conventions, evidence and cleanup: [SKILL.md](../SKILL.md).
 | [github-events](github-events.md) | Signed GitHub failures steer the PR session; retries and self-events add no turn               | Events     | `github`             |
 | [github](github.md)               | A session on a private repo pushes only its own branch, and holds no token                     | G1–G3      | `github`             |
 | [hatch](hatch.md)                 | A dev server in a session opens at its preview URL, and comes back on resume                   | H1–H4      | `hatch`, `hatch-env` |
+| [images](images.md)               | Images sent through chooser/paste/drop survive durable prompts and reach both adapters         | Images     | `images`             |
 | [files](files.md)                 | Images and video the agent makes show in the turn that made them                               | F1–F4      | `files`              |
 | [hooks](hooks.md)                 | A signed webhook starts or steers a session and every delivery is listed                       | K1–K5      | `hooks`              |
 | [signatures](signatures.md)       | Linear and Slack signatures verify; tampered and stale deliveries are listed                   | Signing    | `signatures`         |

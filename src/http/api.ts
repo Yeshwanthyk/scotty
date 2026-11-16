@@ -1,3 +1,4 @@
+import { PromptImages } from "../../protocol/prompt.js";
 import { AgentDefaults, stageAgentDefaults } from "../session/agents/agent-settings.js";
 import { Config, Effect, Exit, Result, Schema, Stream } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
@@ -40,6 +41,7 @@ const Create = Schema.Struct({
   title: Schema.String.check(Schema.isMinLength(1)),
   repo: Repo,
   prompt: Prompt,
+  images: Schema.optionalKey(PromptImages),
   provider: Schema.Literal("cloudflare"),
   agent: Schema.optional(AgentKind),
   size: Schema.optional(Size),
@@ -81,6 +83,7 @@ const RequestId = Schema.String.check(
 const decodeRequestId = Schema.decodeUnknownEffect(RequestId);
 const Steer = Schema.Struct({
   text: Prompt,
+  images: Schema.optionalKey(PromptImages),
   turn: Schema.String,
   req: Schema.optional(RequestId),
 });
@@ -568,6 +571,7 @@ export function apiHandler(
       const started = yield* startSession(sessions, credential, {
         repo: body.repo,
         prompt: body.prompt,
+        images: body.images ?? [],
         title: body.title,
         agent: body.agent ?? (yield* stageAgentDefaults(yield* credential.agentDefaults())).agent,
         place: body.provider,
@@ -766,14 +770,16 @@ export function apiHandler(
         Effect.catchTag("SchemaError", (error) => bad(error.message)),
       );
       if (HttpServerResponse.isHttpServerResponse(body)) return body;
-      return yield* HttpServerResponse.json(
-        yield* stub.request({
-          kind: "prompt",
-          req: body.req ?? retry,
-          turn: body.turn,
-          text: body.text,
-        }),
-      );
+      const result = yield* stub.request({
+        kind: "prompt",
+        req: body.req ?? retry,
+        turn: body.turn,
+        text: body.text,
+        images: body.images ?? [],
+      });
+      return result.status === "conflict"
+        ? yield* bad("Request id already used for a different prompt", 409)
+        : yield* HttpServerResponse.json(result);
     }
     if (request.method === "POST" && subpath === "interrupt") {
       const retry = yield* idempotencyKey(request.headers["idempotency-key"]);

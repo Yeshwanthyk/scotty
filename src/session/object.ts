@@ -1,3 +1,4 @@
+import { sameImages, type PromptImage } from "../../protocol/prompt.js";
 import { cloudflarePlace } from "../places/cloudflare.js";
 import type { Place, PlaceKind, Size } from "../places/place.js";
 import { SqliteClient } from "@effect/sql-sqlite-do";
@@ -572,6 +573,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         start: (input: {
           req: string;
           prompt: string;
+          images?: readonly PromptImage[];
           repo: string;
           agentKind: typeof AgentKind.Type;
           // Only with `create`: the size to make the session at; absent is the default.
@@ -611,6 +613,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                     baseBranch: create.baseBranch,
                     title: create.title,
                     prompt: input.prompt,
+                    images: input.images ?? [],
                     req: input.req,
                     image: create.image,
                     place: create.place,
@@ -633,7 +636,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   req: input.req,
                   turn: log.state.currentTurn,
                   text: input.prompt,
-                  images: [],
+                  images: input.images ?? [],
                 },
                 "api",
               ),
@@ -650,9 +653,19 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           // Absent: the session's current turn, for a caller that has not read it.
           turn?: string;
           text: string;
+          images?: readonly PromptImage[];
         }) =>
           Effect.gen(function* () {
             const turn = input.turn ?? log.state.currentTurn;
+            const seen = log.state.requests.find((request) => request.req === input.req);
+            if (
+              seen !== undefined &&
+              (seen.kind !== input.kind ||
+                seen.turn !== turn ||
+                (seen.kind === "prompt" &&
+                  (seen.text !== input.text || !sameImages(seen.images, input.images))))
+            )
+              return { status: "conflict" };
             const draft: Draft =
               input.kind === "prompt"
                 ? {
@@ -660,7 +673,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                     req: input.req,
                     turn,
                     text: input.text,
-                    images: [],
+                    images: input.images ?? [],
                   }
                 : { kind: "interrupt.requested", req: input.req, turn };
             yield* dispatch(yield* append(draft, "api"));

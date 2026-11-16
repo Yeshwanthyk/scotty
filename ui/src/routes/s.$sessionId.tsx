@@ -1,3 +1,4 @@
+import type { PromptImage } from "../../../protocol/prompt";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Size } from "../../../src/places/place";
@@ -79,6 +80,7 @@ function SessionView({ sessionId }: { sessionId: string }) {
   const [detail, setDetail] = useState<Session>();
   const [snapshot, setSnapshot] = useState<Conversation>();
   const [text, setText] = useState("");
+  const [images, setImages] = useState<readonly PromptImage[]>([]);
   // `error` is the last action's failure and `link` the socket's state, kept apart so a frame
   // doesn't wipe an error.
   const [error, setError] = useState("");
@@ -156,17 +158,29 @@ function SessionView({ sessionId }: { sessionId: string }) {
     setBusy(true);
     setError("");
     const turn = snapshot.currentTurn;
-    const submitted = action === "steer" ? text.trim() : undefined;
-    const input = JSON.stringify([action, turn, submitted]);
+    const submitted =
+      action === "steer" ? text.trim() || "Please look at the attached images." : undefined;
+    const input = JSON.stringify([action, turn, submitted, images]);
     if (attempt.current?.input !== input) attempt.current = { input, req: crypto.randomUUID() };
     try {
-      const result = await write(sessionId, action, turn, attempt.current.req, submitted);
+      const result = await write(
+        sessionId,
+        action,
+        turn,
+        attempt.current.req,
+        submitted,
+        action === "steer" ? images : [],
+      );
       attempt.current = undefined;
       setNote(
         action === "interrupt" ? "Stopping this turn…" : result === "pending" ? "Queued" : "",
       );
-      if (action === "steer" && (result === "pending" || result === "delivered"))
-        setText((current) => (current.trim() === submitted ? "" : current));
+      if (action === "steer" && (result === "pending" || result === "delivered")) {
+        setText((current) =>
+          current.trim() === submitted || current.trim() === "" ? "" : current,
+        );
+        setImages([]);
+      }
       if (working) transcript.jump();
       else transcript.expectTurn();
       refresh.current();
@@ -379,6 +393,8 @@ function SessionView({ sessionId }: { sessionId: string }) {
             ) : null}
             <Composer
               label="Message"
+              images={images}
+              onImagesChange={setImages}
               value={text}
               onChange={setText}
               onSubmit={() => void send("steer")}

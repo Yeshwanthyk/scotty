@@ -1,3 +1,4 @@
+import { PromptImages } from "../../protocol/prompt.js";
 import { Schema } from "effect";
 import { PlaceKind, Size } from "../places/place.js";
 
@@ -59,6 +60,7 @@ export const SessionEvent = Schema.Union([
     branch: Schema.String,
     title: Schema.String,
     prompt: Schema.String,
+    images: Schema.optionalKey(PromptImages),
     // The first prompt's request id, so a retried create is known as one. Absent in logs
     // written before creators named it: those used `initial:<gen>`.
     req: Schema.optionalKey(ClientReq),
@@ -102,7 +104,7 @@ export const SessionEvent = Schema.Union([
     req: ClientReq,
     turn: Schema.String,
     text: Schema.String,
-    images: Schema.Array(Schema.String),
+    images: PromptImages,
   }),
   Schema.Struct({
     ...fromSupervisor,

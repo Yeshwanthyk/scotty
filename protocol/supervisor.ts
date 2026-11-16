@@ -1,3 +1,4 @@
+import { PromptImages } from "./prompt.js";
 import { Schema } from "effect";
 
 const sequence = Schema.Int.check(
@@ -119,6 +120,7 @@ export const ToSupervisor = Schema.Union([
     req: identifier,
     turn: identifier,
     text: Schema.String,
+    images: Schema.optionalKey(PromptImages),
   }),
   Schema.Struct({ ...envelope, type: Schema.Literal("interrupt"), req: identifier }),
   Schema.Struct({ ...envelope, type: Schema.Literal("ack"), ack: acknowledgement }),

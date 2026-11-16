@@ -191,7 +191,11 @@ export class Controller {
     return message.type === "prompt"
       ? this.request(
           req,
-          this.actions.run(this.runner.send(req, message.turn, message.text).pipe(Effect.asVoid)),
+          this.actions.run(
+            this.runner
+              .send(req, message.turn, message.text, message.images ?? [])
+              .pipe(Effect.asVoid),
+          ),
           message.gen,
         )
       : this.request(req, this.actions.run(this.runner.interrupt(req)), message.gen);

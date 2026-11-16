@@ -103,6 +103,7 @@ describe("saved session event logs", () => {
       if (event.seq === 7)
         expect(issued).toEqual({
           kind: "prompt",
+          images: [],
           req: "initial:1",
           turn: "0",
           text: "Describe this repository",
@@ -183,6 +184,7 @@ describe("saved session event logs", () => {
       if (event.kind === "workspace.ready")
         expect(command(state, event)).toEqual({
           kind: "prompt",
+          images: [],
           req: "initial:2",
           turn: "1",
           text: "hello",

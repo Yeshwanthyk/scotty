@@ -1,3 +1,4 @@
+import { imageUrl } from "../../../protocol/prompt";
 import { useEffect, useState } from "react";
 import { fileHref } from "../data/core";
 import { duration } from "../data/status";
@@ -119,6 +120,15 @@ function TurnView({ sessionId, turn, mode }: { sessionId: string; turn: Turn; mo
     <article className="turn" data-turn={turn.id}>
       <SubagentTools value={subagents}>
         <UserMessage text={turn.user} />
+        {(turn.images?.length ?? 0) > 0 ? (
+          <div className="prompt-images">
+            {turn.images?.map((image, index) => (
+              <a key={index} href={imageUrl(image)} target="_blank" rel="noreferrer">
+                <img src={imageUrl(image)} alt={`Attached image ${index + 1}`} />
+              </a>
+            ))}
+          </div>
+        ) : null}
         <div className="assistant">
           {live && mode === "booting" ? null : live ? (
             <>
