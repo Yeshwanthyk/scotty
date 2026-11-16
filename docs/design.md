@@ -668,3 +668,11 @@ What the first `track` deploy showed (2026-10-19) is marked as such; the rest fo
 ### New-session size selection
 
 An explicit size belongs to the draft session and survives repository edits and GitHub link pastes. Without an explicit choice, the repository default still applies.
+
+### Owner defaults and appearance
+
+Settings → Defaults saves `{agent, codex: {model, effort}, claude: {model, effort}}` through `GET/PUT /api/settings/agents`. The Creds DO owns the single SQLite `agent_defaults` row and Schema-decodes it on read. Saved choices override stage settings; without a saved row, the stage settings above apply. Invalid requests return 400 without changing the saved row. An omitted API agent uses the saved default; an explicit agent wins. Each agent start reads current model/effort, including a resume; a running agent keeps its configuration. Scripted agents keep their scripted model.
+
+New session loads the remote default before submission and preserves a choice made while it loads. Failed loading requires an explicit agent choice; an unavailable Claude sign-in is shown rather than silently switching agents. Settings leaves saved defaults untouched on load/save failure. Model names must be available to the signed-in account; Scotty validates their shape, not account availability.
+
+System / Light / Dark appearance is browser-only (`scotty.appearance` in localStorage). A head script applies `data-theme` before paint; System follows color-scheme changes, and the choice survives reload. No owner setting or session event stores appearance.

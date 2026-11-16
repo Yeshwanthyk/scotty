@@ -25,6 +25,7 @@ import type { SourceSpec } from "../settings/skills.js";
 import { isLoopback } from "../loopback.js";
 import { searchText } from "../session/search.js";
 import { AgentKind } from "../session/events.js";
+import { AgentDefaults } from "../session/agents/agent-settings.js";
 import { Size } from "../places/place.js";
 import { repoKey } from "../http/start.js";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
@@ -143,6 +144,7 @@ const FireRow = Schema.Struct({
   session: Schema.NullOr(Schema.String),
   scripted: Schema.Number,
 });
+const AgentDefaultsRow = Schema.Struct({ data: Schema.fromJsonString(AgentDefaults) });
 const SizeRow = Schema.Struct({ size: Size });
 const RepoSettings = Schema.Array(Schema.Struct({ repo: Schema.String, size: Size }));
 const RunAnswer = Schema.Struct({
@@ -216,6 +218,8 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       yield* sql`CREATE TABLE IF NOT EXISTS run_sizes (id TEXT PRIMARY KEY, size TEXT NOT NULL)`;
       // A repository's own defaults, under its `repoKey`.
       yield* sql`CREATE TABLE IF NOT EXISTS repo_settings (repo TEXT PRIMARY KEY, size TEXT NOT NULL)`;
+
+      yield* sql`CREATE TABLE IF NOT EXISTS agent_defaults (id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL)`;
 
       const refreshing = new Map<
         string,
@@ -1039,6 +1043,17 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             ? sql`DELETE FROM repo_settings WHERE repo = ${repoKey(repo)}`
             : sql`INSERT OR REPLACE INTO repo_settings (repo, size) VALUES (${repoKey(repo)}, ${size})`
           ).pipe(Effect.asVoid),
+        agentDefaults: () =>
+          Effect.gen(function* () {
+            const rows = yield* sql`SELECT data FROM agent_defaults WHERE id = 1`;
+            return rows[0] === undefined
+              ? null
+              : (yield* Schema.decodeUnknownEffect(AgentDefaultsRow)(rows[0])).data;
+          }),
+        setAgentDefaults: (defaults: typeof AgentDefaults.Type) =>
+          sql`INSERT OR REPLACE INTO agent_defaults (id, data) VALUES (1, ${JSON.stringify(defaults)})`.pipe(
+            Effect.asVoid,
+          ),
         claudeStyle: () =>
           sql`SELECT skill FROM claude_style`.pipe(
             Effect.flatMap((rows) =>

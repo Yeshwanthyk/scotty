@@ -1,6 +1,6 @@
-/* Tokens. Light and dark follow the system; one radius drives the scale. */
+/* Tokens. The effective theme follows Settings or the system; one radius drives the scale. */
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   --radius: 10px;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -49,37 +49,36 @@
   --overlay: rgb(0 0 0 / 0.18);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #161615;
-    --sidebar: #121211;
-    --surface: #1d1d1c;
-    --raised: #242423;
-    --sunken: #131312;
-    --hover: rgb(255 255 255 / 0.045);
-    --selected: rgb(255 255 255 / 0.075);
-    --ink: #ecebe8;
-    --muted: #a3a29d;
-    --quiet: #93928e;
-    --line: rgb(255 255 255 / 0.07);
-    --line-strong: rgb(255 255 255 / 0.11);
-    --line-hover: rgb(255 255 255 / 0.17);
-    --accent: #d9693f;
-    --accent-strong: #e8825b;
-    --link: #7cc3ec;
-    --working: #6cb6f0;
-    --attention: #e0b057;
-    --done: #62c58e;
-    --danger: #f07266;
-    --success: #62c58e;
-    --warning: #e0b057;
-    --diff-add: #62c58e;
-    --diff-del: #f07266;
-    --diff-add-bg: rgb(98 197 142 / 0.1);
-    --diff-del-bg: rgb(240 114 102 / 0.09);
-    --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 12px 32px rgb(0 0 0 / 0.35);
-    --overlay: rgb(0 0 0 / 0.45);
-  }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #161615;
+  --sidebar: #121211;
+  --surface: #1d1d1c;
+  --raised: #242423;
+  --sunken: #131312;
+  --hover: rgb(255 255 255 / 0.045);
+  --selected: rgb(255 255 255 / 0.075);
+  --ink: #ecebe8;
+  --muted: #a3a29d;
+  --quiet: #93928e;
+  --line: rgb(255 255 255 / 0.07);
+  --line-strong: rgb(255 255 255 / 0.11);
+  --line-hover: rgb(255 255 255 / 0.17);
+  --accent: #d9693f;
+  --accent-strong: #e8825b;
+  --link: #7cc3ec;
+  --working: #6cb6f0;
+  --attention: #e0b057;
+  --done: #62c58e;
+  --danger: #f07266;
+  --success: #62c58e;
+  --warning: #e0b057;
+  --diff-add: #62c58e;
+  --diff-del: #f07266;
+  --diff-add-bg: rgb(98 197 142 / 0.1);
+  --diff-del-bg: rgb(240 114 102 / 0.09);
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 12px 32px rgb(0 0 0 / 0.35);
+  --overlay: rgb(0 0 0 / 0.45);
 }
 
 * {
@@ -2034,17 +2033,15 @@ kbd {
   }
 }
 
-@media (prefers-color-scheme: dark) {
-  .composer {
-    --composer-lift: 0 2px 6px rgb(0 0 0 / 0.35), 0 16px 40px rgb(0 0 0 / 0.45);
-  }
+:root[data-theme="dark"] .composer {
+  --composer-lift: 0 2px 6px rgb(0 0 0 / 0.35), 0 16px 40px rgb(0 0 0 / 0.45);
+}
 
-  /* On a dark page a shadow alone doesn't show, so the size pill keeps a lighter edge and a deeper drop. */
-  .composer-bar .size-picker {
-    box-shadow:
-      inset 0 0 0 1px var(--line-strong),
-      0 1px 3px rgb(0 0 0 / 0.45);
-  }
+/* On a dark page a shadow alone doesn't show, so the size pill keeps a lighter edge and a deeper drop. */
+:root[data-theme="dark"] .composer-bar .size-picker {
+  box-shadow:
+    inset 0 0 0 1px var(--line-strong),
+    0 1px 3px rgb(0 0 0 / 0.45);
 }
 
 /* A phone, or any touch screen: 16px text so iOS doesn't zoom into the field, and larger buttons. */
@@ -3234,13 +3231,11 @@ button.diff-line[data-kind="fold"] {
 }
 
 /* On a dark page a shadow alone doesn't lift a menu, so it is a lighter grey with a firmer ring. */
-@media (prefers-color-scheme: dark) {
-  .menu-list {
-    background: var(--raised);
-    box-shadow:
-      0 0 0 1px var(--line-strong),
-      0 12px 32px rgb(0 0 0 / 0.45);
-  }
+:root[data-theme="dark"] .menu-list {
+  background: var(--raised);
+  box-shadow:
+    0 0 0 1px var(--line-strong),
+    0 12px 32px rgb(0 0 0 / 0.45);
 }
 
 /* ---------- Command menu ---------- */
@@ -3268,13 +3263,11 @@ button.diff-line[data-kind="fold"] {
   overflow: hidden;
 }
 
-@media (prefers-color-scheme: dark) {
-  .command {
-    background: var(--raised);
-    box-shadow:
-      0 0 0 1px var(--line-strong),
-      0 16px 48px rgb(0 0 0 / 0.5);
-  }
+:root[data-theme="dark"] .command {
+  background: var(--raised);
+  box-shadow:
+    0 0 0 1px var(--line-strong),
+    0 16px 48px rgb(0 0 0 / 0.5);
 }
 
 .command-input {
@@ -4606,4 +4599,28 @@ html:active-view-transition-type(compose) .composer-wrap .composer {
   ::view-transition-new(*) {
     animation: none !important;
   }
+}
+
+.agent-defaults .settings-row {
+  flex-wrap: wrap;
+}
+.agent-defaults .settings-row-text {
+  flex-basis: 200px;
+}
+.agent-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 90px;
+  gap: 12px;
+  flex: 1 1 280px;
+  min-width: 0;
+}
+.agent-fields label {
+  min-width: 0;
+}
+.agent-defaults .field {
+  width: 100%;
+  min-width: 0;
+}
+.agent-defaults > .settings-row > select {
+  width: auto;
 }

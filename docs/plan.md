@@ -60,8 +60,8 @@ Ship each piece as it passes, through a PR to `main`, then deploy to `scotty.yes
 
 - [x] Use an account-supported Codex default; `e2e drafts --real` completed with `gpt-6.1-sol`.
 - [x] Keep an explicitly chosen size while editing the repository; live browser retained `standard-2`, and `e2e drafts --real` read it back on the created session.
-- [ ] Save default agent/model/effort in Settings; read back and use on the next agent start.
-- [ ] Add System / Light / Dark appearance; browser choice survives reload.
+- [x] Save default agent/model/effort in Settings; `e2e defaults --real` saved/read back, rejected invalid values, selected the default agent and used saved model/effort at a real start; browser Save survived reload.
+- [x] Add System / Light / Dark appearance; live browser reload retained Dark and Light, System followed both preferred schemes, and model/effort fields fit at 375 px.
 - [ ] Attach, paste and drop images; both agent adapters receive them, retries retain them, conversation displays them.
 - [ ] Choose a repository from a searchable list when starting directly.
 
