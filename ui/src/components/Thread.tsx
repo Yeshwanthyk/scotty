@@ -123,9 +123,7 @@ function TurnView({ sessionId, turn, mode }: { sessionId: string; turn: Turn; mo
         {(turn.images?.length ?? 0) > 0 ? (
           <div className="prompt-images">
             {turn.images?.map((image, index) => (
-              <a key={index} href={imageUrl(image)} target="_blank" rel="noreferrer">
-                <img src={imageUrl(image)} alt={`Attached image ${index + 1}`} />
-              </a>
+              <img key={index} src={imageUrl(image)} alt={`Attached image ${index + 1}`} />
             ))}
           </div>
         ) : null}

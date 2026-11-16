@@ -181,7 +181,10 @@ export function Composer({
                 className="icon-button"
                 aria-label={`Remove image ${index + 1}`}
                 disabled={busy || disabled || preparing}
-                onClick={() => onImagesChange?.(images.filter((_, at) => at !== index))}
+                onClick={() => {
+                  onImagesChange?.(images.filter((_, at) => at !== index));
+                  setImageError("");
+                }}
               >
                 <Icon name="x" size={14} />
               </button>
@@ -228,7 +231,7 @@ export function Composer({
             />
             <button
               type="button"
-              className="icon-button pressable"
+              className="icon-button pressable attach-images"
               aria-label="Attach images"
               disabled={busy || disabled || preparing}
               onClick={() => picker.current?.click()}

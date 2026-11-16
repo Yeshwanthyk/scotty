@@ -4393,7 +4393,7 @@ html:has(.viewer[open]) {
     padding-top: 10vh;
   }
 
-  /* Two rows: the repository alone, then agent, size and Send at the far end. */
+  /* Repository and attachment above agent, size and Send. */
   .new-session .composer-bar {
     display: grid;
     grid-template-columns: auto auto minmax(0, 1fr);
@@ -4402,8 +4402,15 @@ html:has(.viewer[open]) {
     row-gap: 8px;
   }
 
+  .new-session .composer-bar > .attach-images {
+    grid-column: 3;
+    grid-row: 1;
+    justify-self: end;
+  }
+
   .new-session .composer-bar > .repo-picker {
-    grid-column: 1 / -1;
+    grid-column: 1 / 3;
+    grid-row: 1;
     justify-self: start;
     max-width: 100%;
   }

@@ -118,11 +118,13 @@ const program = Effect.gen(function* () {
       key: crypto.randomUUID(),
       body: { text: "say BOUNDARY", turn: conversation.currentTurn, images: large },
     });
+    const largeDigest = createHash("sha256").update(imageUrl(large[0])).digest("hex");
     yield* poll(
       () => request(`${prefix}/conversation`, Conversation),
       (value) =>
         value.turns.some(
-          (turn) => sameImages(turn.images, large) && turn.assistant.includes("BOUNDARY"),
+          (turn) =>
+            sameImages(turn.images, large) && turn.assistant.includes(`IMAGE:${largeDigest}`),
         ),
     );
     console.log(
@@ -136,8 +138,10 @@ const program = Effect.gen(function* () {
           `${evidence}/events.jsonl`,
           log.map((event) => JSON.stringify(event)).join("\n") + "\n",
         );
-        yield* request(`${prefix}/stop`, View, { method: "POST" });
-      }).pipe(Effect.ignore),
+      }).pipe(
+        Effect.ensuring(request(`${prefix}/stop`, View, { method: "POST" }).pipe(Effect.ignore)),
+        Effect.ignore,
+      ),
     ),
   );
 });

@@ -62,7 +62,7 @@ Ship each piece as it passes, through a PR to `main`, then deploy to `scotty.yes
 - [x] Keep an explicitly chosen size while editing the repository; live browser retained `standard-2`, and `e2e drafts --real` read it back on the created session.
 - [x] Save default agent/model/effort in Settings; `e2e defaults --real` saved/read back, rejected invalid values, selected the default agent and used saved model/effort at a real start; browser Save survived reload.
 - [x] Add System / Light / Dark appearance; live browser reload retained Dark and Light, System followed both preferred schemes, and model/effort fields fit at 375 px.
-- [ ] Attach, paste and drop images; both agent adapters receive them, retries retain them, conversation displays them.
+- [x] Attach, paste and drop images; live `e2e images` passed for Codex and Claude, real Codex described two browser attachments, and desktop/mobile previews and retained conversation images passed after redeploy. Fold tests pin pending resend payloads.
 - [ ] Choose a repository from a searchable list when starting directly.
 
 ## Open

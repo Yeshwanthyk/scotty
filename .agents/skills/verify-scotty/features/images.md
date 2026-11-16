@@ -10,6 +10,7 @@
    previews and send controls. Send an image-only prompt and inspect its conversation image.
 3. Send a known colored shape to real Codex and ask what it depicts. Its visual answer must
    identify the shape/color. Steer with another image. Reload the page: both images persist.
-4. Interrupt a connection/redeploy during a queued prompt; the fold test pins exact images in
-   resend commands. Read the live log and conversation after reconnect for intact payloads.
+4. Redeploy, reconnect and compare live log image payloads with the conversation snapshot.
+   The fold test separately pins exact images in pending resend commands; report this distinction
+   rather than claiming a live pending resend was exercised.
 5. Stop only owned sessions, save logs/screenshots, close the owned tab; restore changed settings.
