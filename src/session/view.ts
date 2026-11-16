@@ -84,7 +84,7 @@ export function sessionView(id: string, state: State) {
       authority: {
         kind: "transitioning" as const,
         action: "create" as const,
-        phase: state.hello ? "workspace" : "container",
+        phase: state.prepared ? "agent" : state.hello ? "workspace" : "container",
         mode: "executing" as const,
         startedAt: new Date(created?.at ?? 0).toISOString(),
       },

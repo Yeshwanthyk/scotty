@@ -51,6 +51,7 @@ export const Origin = Schema.Union([
 export type Origin = typeof Origin.Type;
 
 export const SessionEvent = Schema.Union([
+  Schema.Struct({ ...fromSupervisor, kind: Schema.Literal("workspace.prepared") }),
   Schema.Struct({
     ...envelope,
     kind: Schema.Literal("created"),

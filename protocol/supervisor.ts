@@ -126,6 +126,7 @@ export const ToSupervisor = Schema.Union([
   Schema.Struct({ ...envelope, type: Schema.Literal("ack"), ack: acknowledgement }),
 ]);
 export const FromSupervisor = Schema.Union([
+  Schema.Struct({ ...envelope, type: Schema.Literal("workspace_prepared") }),
   Schema.Struct({
     ...envelope,
     type: Schema.Literal("hello"),

@@ -180,6 +180,7 @@ export function command(state: State, event: SessionEvent): Command | undefined 
         )
         ? { kind: "interrupt", req: event.req }
         : undefined;
+    case "workspace.prepared":
     case "agent.ready":
     case "agent.event":
     case "prompt.delivered":

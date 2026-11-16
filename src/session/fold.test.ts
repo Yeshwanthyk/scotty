@@ -14,6 +14,37 @@ import { conversationView, sessionView } from "./view.js";
 import { boot, check, created, delivered, hello, make, ready, start } from "./fold-fixtures.js";
 
 describe("session fold", () => {
+  it("workspace preparation changes progress without releasing prompts or sliding deadlines", () => {
+    let state = [created, start, hello].reduce(fold, initial);
+    const pending = state.pending;
+    const prepared = make(4, "workspace.prepared", { gen: 1, n: 2 });
+    state = fold(state, prepared);
+    expect(state.ready).toBe(false);
+    expect(state.requests).toEqual([]);
+    expect(state.pending).toEqual(pending);
+    expect(command(state, prepared)).toBeUndefined();
+    expect(sessionView("startup", state).authority).toMatchObject({ phase: "agent" });
+    const duplicate = make(5, "workspace.prepared", { gen: 1, n: 2 });
+    expect(fold(state, duplicate)).toEqual({ ...state, lastSeq: 5 });
+    const wrongGen = make(6, "workspace.prepared", { gen: 2, n: 3 });
+    expect(fold(state, wrongGen).lastN).toBe(2);
+    state = fold(state, make(7, "socket.closed", { gen: 1 }));
+    const reconnect = make(8, "sup.hello", { gen: 1, version: "v1" });
+    state = fold(state, reconnect);
+    expect(command(state, reconnect)?.kind).toBe("start");
+    expect(state.pending.find((p) => p.op === "workspace")).toEqual(
+      pending.find((p) => p.op === "workspace"),
+    );
+    const ready = make(9, "workspace.ready", { gen: 1, n: 3, branch: "main", commit: "abc" });
+    state = fold(state, ready);
+    expect(command(state, ready)?.kind).toBe("prompt");
+    state = fold(state, make(10, "container.stopped", { gen: 1, reason: "user" }));
+    state = fold(state, make(11, "resume.requested"));
+    expect(state.prepared).toBe(false);
+    expect(sessionView("startup", state).authority).toMatchObject({ phase: "container" });
+    check(state);
+  });
+
   it("retains images in initial prompts, queued steering and reconnect resends", () => {
     const images = [{ mediaType: "image/png" as const, data: "aGVsbG8=" }];
     if (created.kind !== "created") throw new Error("Expected created fixture");
