@@ -1,3 +1,4 @@
+import { sameImages, type PromptImage } from "../../protocol/prompt.js";
 import { shouldAck } from "./ack.js";
 import type { SessionEvent } from "./events.js";
 import { deadlines, has, remove, addOnce, reqOp, requestFromOp, idleWindow } from "./deadlines.js";
@@ -212,6 +213,7 @@ function step(state: State, event: SessionEvent): State {
             turn: state.currentTurn,
             kind: "prompt",
             text: state.created.prompt,
+            images: state.created.images ?? [],
             status: "pending",
             seq: event.seq,
           },
@@ -248,6 +250,7 @@ function step(state: State, event: SessionEvent): State {
               turn: event.turn,
               kind: "prompt",
               text: event.text,
+              images: event.images,
               status: valid ? "pending" : "stale",
               seq: event.seq,
             }
@@ -514,6 +517,7 @@ export function startStep(
     readonly agent: string;
     readonly size?: typeof Size.Type;
     readonly prompt: string;
+    readonly images?: readonly PromptImage[];
   },
 ): "create" | "prompt" | "duplicate" | "unavailable" | "conflict" {
   const created = state.created;
@@ -524,10 +528,18 @@ export function startStep(
     (input.size !== undefined && (created.size ?? defaultSize) !== input.size)
   )
     return "conflict";
-  if (created.req === input.req) return created.prompt === input.prompt ? "duplicate" : "conflict";
+  if (created.req === input.req)
+    return created.prompt === input.prompt && sameImages(created.images, input.images)
+      ? "duplicate"
+      : "conflict";
   const seen = state.requests.find((item) => item.req === input.req);
   if (seen === undefined) return "prompt";
-  if (seen.kind !== "prompt" || seen.text !== input.prompt) return "conflict";
+  if (
+    seen.kind !== "prompt" ||
+    seen.text !== input.prompt ||
+    !sameImages(seen.images, input.images)
+  )
+    return "conflict";
   // Refused, failed or of unknown fate: the session never said it took the prompt.
   return seen.status === "pending" || seen.status === "delivered" || seen.status === "ended"
     ? "duplicate"

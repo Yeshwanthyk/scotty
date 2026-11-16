@@ -1,3 +1,4 @@
+import { imageUrl, type PromptImage } from "../../../../protocol/prompt.js";
 import { Effect, Option, Queue, Result, Schema, Stream, type Scope, type FileSystem } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
 import { supervisorVersion } from "../../../../protocol/supervisor.js";
@@ -123,7 +124,12 @@ export class CodexRunner implements Runner {
       return { kind: "codex", session: thread.thread.id };
     });
   }
-  send(req: string, turn: string, text: string): Effect.Effect<Delivered, AgentError> {
+  send(
+    req: string,
+    turn: string,
+    text: string,
+    images: readonly PromptImage[] = [],
+  ): Effect.Effect<Delivered, AgentError> {
     return Effect.gen({ self: this }, function* () {
       const rpc = this.rpc;
       const threadId = this.thread;
@@ -136,7 +142,10 @@ export class CodexRunner implements Runner {
         const result = yield* rpc.request("turn/steer", {
           threadId,
           expectedTurnId: active,
-          input: [{ type: "text", text }],
+          input: [
+            { type: "text", text },
+            ...images.map((image) => ({ type: "image", url: imageUrl(image) })),
+          ],
         });
         const response = yield* Schema.decodeUnknownEffect(Steered)(result).pipe(
           Effect.mapError(
@@ -152,7 +161,10 @@ export class CodexRunner implements Runner {
         this.pendingDo = turn;
         const result = yield* rpc.request("turn/start", {
           threadId,
-          input: [{ type: "text", text }],
+          input: [
+            { type: "text", text },
+            ...images.map((image) => ({ type: "image", url: imageUrl(image) })),
+          ],
         });
         const response = yield* Schema.decodeUnknownEffect(Started)(result).pipe(
           Effect.mapError(

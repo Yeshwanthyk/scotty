@@ -1,3 +1,4 @@
+import type { PromptImage } from "../../../protocol/prompt";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
   useEffect,
@@ -220,6 +221,7 @@ export function NewSession() {
   const [claudeReady, setClaudeReady] = useState<boolean | undefined>(undefined);
   const [claudeHint, setClaudeHint] = useState(false);
   const [prompt, setPrompt] = useState("");
+  const [images, setImages] = useState<readonly PromptImage[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [filled, setFilled] = useState("");
@@ -361,15 +363,17 @@ export function NewSession() {
     setBusy(true);
     setError("");
     try {
-      const input = JSON.stringify([repo.trim(), prompt.trim(), chosen, own]);
+      const submitted = prompt.trim() || "Please look at the attached images.";
+      const input = JSON.stringify([repo.trim(), submitted, chosen, own, images]);
       if (attempt.current?.input !== input) attempt.current = { input, key: crypto.randomUUID() };
       const id = await create(
-        titleOf(prompt),
+        titleOf(submitted),
         repo.trim(),
-        prompt.trim(),
+        submitted,
         attempt.current.key,
         chosen,
         own,
+        images,
       );
       remember(lastRepoKey, repo.trim());
       refresh();
@@ -422,6 +426,8 @@ export function NewSession() {
           <h1 className="desktop-only sr-only">New session</h1>
           <Composer
             label="Prompt"
+            images={images}
+            onImagesChange={setImages}
             value={prompt}
             onChange={typed}
             onSubmit={() => void submit()}

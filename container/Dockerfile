@@ -4,7 +4,7 @@ COPY package.json package-lock.json ./
 COPY ui/package.json ./ui/package.json
 RUN bun install --frozen-lockfile --no-save --ignore-scripts
 COPY container/supervisor ./container/supervisor
-COPY protocol/supervisor.ts ./protocol/supervisor.ts
+COPY protocol/supervisor.ts protocol/prompt.ts ./protocol/
 RUN bun build --compile container/supervisor/main.ts --outfile /out/scotty-sup
 COPY container/scripted ./container/scripted
 RUN bun build --compile container/scripted/codex.ts --outfile /out/scotty-codex-scripted \

@@ -1,3 +1,4 @@
+import type { PromptImage } from "../../../protocol/prompt";
 import { Option, Schema } from "effect";
 import { Size } from "../../../src/places/place";
 import {
@@ -158,11 +159,13 @@ export async function create(
   agent: "codex" | "claude",
   // Absent: the Worker picks the repository's default, else standard-1.
   size?: typeof Size.Type,
+  images: readonly PromptImage[] = [],
 ): Promise<string> {
   const body = {
     title,
     repo,
     prompt,
+    images,
     agent,
     ...(size === undefined ? {} : { size }),
     provider: "cloudflare",
@@ -179,12 +182,13 @@ export async function write(
   turn: string,
   req: string,
   text?: string,
+  images: readonly PromptImage[] = [],
 ): Promise<string> {
   const result = Option.getOrUndefined(
     decodeWrite(
       await request(
         "/api/sessions/" + encodeURIComponent(id) + "/" + action,
-        action === "steer" ? { text, turn, req } : { turn, req },
+        action === "steer" ? { text, turn, req, images } : { turn, req },
       ),
     ),
   );

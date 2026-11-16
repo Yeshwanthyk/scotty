@@ -10,10 +10,36 @@ import {
   startStep,
   type State,
 } from "./fold.js";
-import { sessionView } from "./view.js";
+import { conversationView, sessionView } from "./view.js";
 import { boot, check, created, delivered, hello, make, ready, start } from "./fold-fixtures.js";
 
 describe("session fold", () => {
+  it("retains images in initial prompts, queued steering and reconnect resends", () => {
+    const images = [{ mediaType: "image/png" as const, data: "aGVsbG8=" }];
+    if (created.kind !== "created") throw new Error("Expected created fixture");
+    const first = { ...created, req: "photo", images };
+    let state = [first, start, hello, ready].reduce(fold, initial);
+    expect(command(state, ready)).toMatchObject({ images });
+    expect(conversationView(state, [first, start, hello, ready]).turns[0]?.images).toEqual(images);
+    const input = { req: "photo", repo: first.repo, agent: "codex", prompt: first.prompt, images };
+    expect(startStep(state, input)).toBe("duplicate");
+    expect(startStep(state, { ...input, images: [] })).toBe("conflict");
+    const steer = make(6, "prompt.requested", { req: "next", turn: "0", text: "look", images });
+    state = fold(state, steer);
+    expect(command(state, steer)).toMatchObject({ images });
+    const closed = make(7, "socket.closed", { gen: 1 });
+    state = fold(state, closed);
+    const connected = make(8, "sup.hello", { gen: 1, version: "v1" });
+    state = fold(state, connected);
+    const resend = command(state, connected);
+    expect(resend).toMatchObject({ kind: "resend", requests: [{ images }, { images }] });
+    expect(startStep(state, { ...input, req: "next", prompt: "look" })).toBe("duplicate");
+    expect(startStep(state, { ...input, req: "next", prompt: "look", images: [] })).toBe(
+      "conflict",
+    );
+    check(state);
+  });
+
   it("provisions from an intent, sends initial prompt after workspace and waits for delivery", () => {
     let state = fold(initial, created);
     state = fold(state, start);
@@ -31,6 +57,7 @@ describe("session fold", () => {
     state = fold(state, ready);
     expect(command(state, ready)).toEqual({
       kind: "prompt",
+      images: [],
       req: "initial:1",
       turn: "0",
       text: "hello",
@@ -94,6 +121,7 @@ describe("session fold", () => {
     state = fold(state, workspace);
     expect(command(state, workspace)).toEqual({
       kind: "prompt",
+      images: [],
       req: "create-1",
       turn: "0",
       text: "hello",
@@ -179,7 +207,13 @@ describe("session fold", () => {
     state = boot();
     const prompt = make(6, "prompt.requested", { req: "p", turn: "0", text: "steer", images: [] });
     state = fold(state, prompt);
-    expect(command(state, prompt)).toEqual({ kind: "prompt", req: "p", turn: "0", text: "steer" });
+    expect(command(state, prompt)).toEqual({
+      kind: "prompt",
+      images: [],
+      req: "p",
+      turn: "0",
+      text: "steer",
+    });
     const duplicate = make(7, "prompt.requested", {
       req: "p",
       turn: "0",
@@ -256,7 +290,7 @@ describe("session fold", () => {
     expect(command(state, reconnect)).toEqual({
       kind: "resend",
       gen: 1,
-      requests: [{ req: "x", kind: "prompt", turn: "0", text: "more" }],
+      requests: [{ req: "x", kind: "prompt", images: [], turn: "0", text: "more" }],
     });
     state = fold(state, make(14, "agent.event", { agentKind: "codex", gen: 1, n: 6, event: null }));
     expect(state.lastN).toBe(6);
@@ -562,7 +596,7 @@ describe("session fold", () => {
     expect(command(state, resumed)).toEqual({
       kind: "resend",
       gen: 2,
-      requests: [{ req: "s1", kind: "prompt", turn: "1", text: "again" }],
+      requests: [{ req: "s1", kind: "prompt", images: [], turn: "1", text: "again" }],
     });
     check(state);
   });

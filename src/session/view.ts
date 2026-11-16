@@ -157,6 +157,7 @@ export function conversationView(state: State, events: readonly SessionEvent[]) 
         id: request.req,
         state: turnState(state.turns.find((turn) => turn.turn === request.turn)?.state),
         user: request.text,
+        images: request.images ?? [],
         assistant: answers.get(request.turn) ?? "",
         items: items.get(request.turn)?.items ?? [],
         diff: items.get(request.turn)?.diff ?? "",

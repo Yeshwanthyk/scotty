@@ -676,3 +676,26 @@ Settings → Defaults saves `{agent, codex: {model, effort}, claude: {model, eff
 New session loads the remote default before submission and preserves a choice made while it loads. Failed loading requires an explicit agent choice; an unavailable Claude sign-in is shown rather than silently switching agents. Settings leaves saved defaults untouched on load/save failure. Model names must be available to the signed-in account; Scotty validates their shape, not account availability.
 
 System / Light / Dark appearance is browser-only (`scotty.appearance` in localStorage). A head script applies `data-theme` before paint; System follows color-scheme changes, and the choice survives reload. No owner setting or session event stores appearance.
+
+### Images in prompts
+
+The composer accepts up to four images (chooser, paste or drop; source files up to 20 MB).
+It rasterizes the first frame at at most 1600 px on the longest edge, keeps lossless PNG
+when it fits, otherwise uses WebP at quality 0.9 and reduces dimensions until each encoded
+image is at most 170,000 characters. Alpha is preserved; animation and metadata are omitted.
+Preparation errors and failed sends retain the draft; previews can be removed before sending.
+
+`protocol/prompt.ts` owns `{mediaType, data}`: JPEG/PNG/WebP/GIF, base64 syntax,
+at most 220,000 characters each, four images, 700,000 characters total. Create and steer
+Schema-decode it. The Session DO records images in `created` and `prompt.requested`, folds
+them into requests, and sends the same payload on reconnect. Idempotency compares images as
+well as text. Existing logs without initial images or with steering `images: []` still decode.
+Codex receives image data URLs in `turn/start` and `turn/steer`; Claude receives base64 image
+blocks. Conversation snapshots render images from durable prompt requests.
+
+These bounds fit [Worker RPC](https://developers.cloudflare.com/workers/runtime-apis/rpc/)
+and [WebSocket](https://developers.cloudflare.com/workers/runtime-apis/websockets/) limits
+of 32 MiB, and the [DO SQLite row limit](https://developers.cloudflare.com/durable-objects/platform/limits/)
+of 8 MB (checked 2026-11-16). The supervisor also enforces a 1 MiB inbound frame cap. Create/steer therefore bound
+the serialized text and images to 1,000,000 bytes, leaving room for its command envelope;
+JSON escaping counts toward that bound. No separate upload service is needed. Conversation snapshots grow with retained prompts, as before.

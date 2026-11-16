@@ -1,3 +1,4 @@
+import { PromptImages } from "../../../../protocol/prompt";
 import { Option, Schema } from "effect";
 
 const Change = Schema.Struct({
@@ -45,6 +46,7 @@ const Turn = Schema.Struct({
   id: Schema.String,
   state: Schema.Literals(["completed", "streaming", "failed", "aborted"]),
   user: Schema.String,
+  images: Schema.optionalKey(PromptImages),
   assistant: Schema.String,
   items: Schema.Array(Item),
   diff: Schema.String,
