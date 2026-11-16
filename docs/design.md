@@ -75,7 +75,7 @@ A handler never awaits an outside party while changing state. An outside action 
 | Event                                   | Fields                                                                                                                                                                                                                                                                                                                                             |
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `created`                               | `repo, baseBranch, branch, title, prompt, req?, image, agentKind, place?, size?, origin?, scripted?, idleAfter?` (`req`: the first prompt's request id; `size`: the container size, absent = `standard-1`; `branch` is the work branch `scotty/<session id>`, chosen at create time; `idleAfter` shortens the idle window, scripted sessions only) |
-| `container.start` / `sup.hello`         | `gen` / `gen, n, version, boot` (`boot` identifies one supervisor process)                                                                                                                                                                                                                                                                         |
+| `container.start` / `sup.hello`         | `gen` / `gen, n, version, boot, startup?` (`boot` identifies one supervisor process)                                                                                                                                                                                                                                                               |
 | `workspace.ready`                       | `gen, n, base, branch, commit, ms?, retried?` (`ms`: clone/fetch time; `retried`: git's error for each retried GitHub failure)                                                                                                                                                                                                                     |
 | `agent.ready`                           | `gen, n, agentKind, session` (the agent's session id)                                                                                                                                                                                                                                                                                              |
 | `prompt.requested` / `prompt.delivered` | `req, turn, text, images` / `gen, n, req` (delivery settles a prompt or interrupt; client `req` cannot start with `initial:`)                                                                                                                                                                                                                      |
@@ -876,4 +876,58 @@ unchanged. Diagnostic appends finish before/after the timed network effect and n
 log's state-mutation permit across network work. They add bounded persistence overhead, so
 these observations cannot establish a latency speedup. Runtime uptime from the existing
 GraphQL rows can corroborate process age but retains the ingestion/semantics uncertainty
-above; this diagnostic path needs no inaccessible provider lifecycle telemetry.
+above; this diagnostic path needs no inaccessible provider lifecycle telemetry. The current
+Container binding exposes running/image inspection, not runtime uptime; GraphQL runtime rows
+remain a separate corroborating observation.
+
+The bounded follow-up used the image built from `1f00c577fc078eaeef924bfca7c8f7ad4bbcefc1`
+in [CI run 43822641659](https://github.com/Yeshwanthyk/scotty/actions/runs/43822641659).
+It imported the persistent cache and reported 10 cached steps, including the heavy tool
+installation layer. The published/pinned digest is
+`sha256:ca43a23da7e5555c560722b0333e4bb050fba6cb3c25dfac9cb6461ac023586d`.
+
+Five scripted fixture starts on `standard-1`, sequential and without exclusions, all completed
+the expected answer: one core regression start (`ready 0`) followed by four startup assertions
+(`startup-ready`). The four-start harness was a scratch copy of `e2e/startup.ts` with only its
+run bound reduced from five to four and its relative helper import adjusted, so core counted
+toward the five-start budget. Core's redeploy/reconnect, steer, mid-turn steer and interrupt
+checks passed before the four-start probe; no deployments overlapped the probe.
+
+All columns below are milliseconds. Process/listen ages are monotonic within the supervisor;
+start-to-hello and answer time use the DO clock. Wall-clock origins were captured but were not
+used to infer the cause.
+
+| Session                                 | Setup | Hello | Process age at hello | Listening to hello | Completed answer |
+| --------------------------------------- | ----: | ----: | -------------------: | -----------------: | ---------------: |
+| 916ff3a1821e409cb240977c6c4634a0 (core) |   121 | 43767 |              844.121 |            300.367 |            44999 |
+| 66e1ec4cba424448b0de5fcfe6a27e8c        |   125 |  1451 |              849.969 |            289.879 |             2615 |
+| fd26c48132184d09be7ee9da495e03bf        |   109 | 52385 |              420.050 |            115.364 |            53185 |
+| c7f7482474424b349d1679f2fe9356fd        |   128 |  1383 |              775.685 |            302.924 |             2539 |
+| 8eecd433208145ba95ff7c98f1aa496c        |   126 |  1480 |              874.733 |            391.080 |             2652 |
+
+The two slow occurrences localize the dominant wait before the supervisor process: subtracting
+process age from durable start-to-hello leaves 42922.879/51964.950 ms, including hello
+transit/receipt overhead and uncalibrated relative clock-rate error. Their successful dials
+took 31/27 ms, with hello recorded at the same DO timestamp as each result. The supervisor
+had listened for only 300.367/115.364 ms. This strongly supports late process startup rather
+than an early listener waiting tens of seconds for connection. Each slow run first recorded
+four 10000-ms dial timeouts; the 52-second run then had a 9749-ms failed attempt and a
+27-ms successful attempt. Fixed outcome codes intentionally do not identify provider error
+causes. No application latency fix is justified by these observations.
+
+Saved raw replays are [the core run](../e2e/logs/2026-11-16-startup-diagnostics.jsonl) and
+[the 52-second startup run](../e2e/logs/2026-11-16-startup-diagnostics-probe.jsonl).
+The explicit replay compares state and commands with diagnostics removed, preserving source
+sequence numbers; deadlines remain identical. Old hello logs still decode. The four startup
+assertions checked timing presence/order, bounded paired attempts, completed turns and exact
+answer markers. Core and all probe sessions were stopped; no preexisting session was operated
+on. Doctor passed, and both deployed Worker module SHA-256 hashes matched the built release. Provider instances
+readback confirmed that all five post-image starts used the pinned digest (the slow core
+instance was in ord07; the slow startup probe was in ewr16).
+
+These are uncontrolled rollout observations, not an alternating before/after benchmark. The
+four identical startup prompts completed in 2539–53185 ms (n=4, zero failures); core used a
+different prompt and is not pooled into that answer-time range. The remaining causal gap is
+before process startup: provider image pull/unpack versus VM/runtime preparation. The denied
+lifecycle timeline is still needed to split those phases. No speedup is established, and
+sampling stopped at the authorized five starts.
