@@ -1,3 +1,4 @@
+import { StartupTiming } from "../../protocol/supervisor.js";
 import { PromptImages } from "../../protocol/prompt.js";
 import { Schema } from "effect";
 import { PlaceKind, Size } from "../places/place.js";
@@ -83,10 +84,25 @@ export const SessionEvent = Schema.Union([
     gen: Schema.Natural,
   }),
   Schema.Struct({
+    ...envelope,
+    kind: Schema.Literal("container.dial.attempt"),
+    gen: Schema.Natural,
+    attempt: Schema.Natural.check(Schema.isBetween({ minimum: 1, maximum: 16 })),
+  }),
+  Schema.Struct({
+    ...envelope,
+    kind: Schema.Literal("container.dial.result"),
+    gen: Schema.Natural,
+    attempt: Schema.Natural.check(Schema.isBetween({ minimum: 1, maximum: 16 })),
+    elapsedMs: Schema.Finite,
+    outcome: Schema.Literals(["connected", "stale", "failed", "timeout", "interrupted"]),
+  }),
+  Schema.Struct({
     ...fromSupervisor,
     kind: Schema.Literal("sup.hello"),
     version: Schema.String,
     boot: Schema.String,
+    startup: Schema.optionalKey(StartupTiming),
   }),
   Schema.Struct({
     ...fromSupervisor,

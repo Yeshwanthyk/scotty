@@ -39,6 +39,31 @@ const program = Effect.gen(function* () {
       const answer = yield* request(`${prefix}/conversation`, Conversation);
       const at = (kind: string) => log.find((e) => e.kind === kind)?.at ?? NaN;
       const start = at("container.start");
+      const hello = log.find((e) => e.kind === "sup.hello");
+      const timing = hello?.kind === "sup.hello" ? hello.startup : undefined;
+      const attempts = log.filter((e) => e.kind === "container.dial.attempt");
+      const results = log.filter((e) => e.kind === "container.dial.result");
+      if (
+        timing === undefined ||
+        timing.helloAgeMs < timing.listeningAgeMs ||
+        attempts.length === 0 ||
+        attempts.length > 16 ||
+        results.length !== attempts.length ||
+        attempts.some(
+          (attempt) =>
+            !results.some(
+              (result) =>
+                result.gen === attempt.gen &&
+                result.attempt === attempt.attempt &&
+                result.at >= attempt.at,
+            ),
+        )
+      )
+        return yield* failure(
+          "startup",
+          "Missing or inconsistent startup diagnostics",
+          "scotty doctor",
+        );
       const stages = [
         "container.start",
         "container.dial.started",
@@ -74,6 +99,15 @@ const program = Effect.gen(function* () {
           delivered: at("prompt.delivered") - start,
           ended: at("turn.ended") - start,
           answer: answer.turns[0]?.assistant,
+          timing,
+          // Durations from separate clocks: no wall-clock offset assumption.
+          preProcessAndTransitMs: at("sup.hello") - start - timing.helloAgeMs,
+          listeningToHelloMs: timing.helloAgeMs - timing.listeningAgeMs,
+          attempts: results.map(({ attempt, elapsedMs, outcome }) => ({
+            attempt,
+            elapsedMs,
+            outcome,
+          })),
         }),
       );
     }).pipe(

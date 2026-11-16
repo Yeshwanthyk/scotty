@@ -1,3 +1,4 @@
+import { uptime } from "node:process";
 import { Effect, Option, Queue, Result, Schema } from "effect";
 import {
   type Terminals,
@@ -74,6 +75,9 @@ export const serve = (
   receive: (message: ToSupervisorMessage) => Effect.Effect<void>,
   saves: Saves,
 ) => {
+  const processOriginEstimate = Date.now() - uptime() * 1000;
+  let listeningAt = 0;
+  let listeningAgeMs = 0;
   const queue = Effect.runSync(Queue.unbounded<Event>());
   // The consumer alone owns wire state and the active peer; Bun callbacks only enqueue.
   let wire = initialWire(crypto.randomUUID());
@@ -115,7 +119,12 @@ export const serve = (
   const processEvent = (event: Event): Effect.Effect<void> => {
     switch (event.type) {
       case "open": {
-        const result = dial(wire, event.peer.data.gen, event.peer.data.after);
+        const result = dial(wire, event.peer.data.gen, event.peer.data.after, {
+          processOriginEstimate,
+          listeningAt,
+          listeningAgeMs,
+          helloAgeMs: uptime() * 1000,
+        });
         if (result.conflict) {
           event.peer.close();
           return Effect.void;
@@ -292,6 +301,8 @@ export const serve = (
       },
     },
   });
+  listeningAt = Date.now();
+  listeningAgeMs = uptime() * 1000;
   return (value: Output, gen?: number) =>
     enqueue({ type: "output", output: value, ...(gen === undefined ? {} : { gen }) });
 };
