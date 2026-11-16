@@ -25,3 +25,7 @@ export const sameImages = (left: readonly PromptImage[] = [], right: readonly Pr
     (image, index) =>
       image.mediaType === right[index]?.mediaType && image.data === right[index]?.data,
   );
+
+// Leave room for request ids and the supervisor command envelope under its 1 MiB cap.
+export const promptFits = (text: string, images: readonly PromptImage[] = []) =>
+  new TextEncoder().encode(JSON.stringify({ text, images })).byteLength <= 1_000_000;

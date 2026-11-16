@@ -108,6 +108,11 @@ const program = Effect.gen(function* () {
     )
       return yield* failure("images", "Steer/retry lost images or duplicated prompt", "scotty log");
     const large = Array(4).fill({ ...image, data: "AAAA".repeat(43_750) });
+    yield* expectStatus(
+      `${prefix}/steer`,
+      { text: "\0".repeat(100_000), turn: conversation.currentTurn, images: large },
+      400,
+    );
     yield* request(`${prefix}/steer`, Outcome, {
       method: "POST",
       key: crypto.randomUUID(),

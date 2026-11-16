@@ -685,7 +685,7 @@ when it fits, otherwise uses WebP at quality 0.9 and reduces dimensions until ea
 image is at most 170,000 characters. Alpha is preserved; animation and metadata are omitted.
 Preparation errors and failed sends retain the draft; previews can be removed before sending.
 
-`protocol/prompt.ts` owns `{mediaType, data}`: JPEG/PNG/WebP/GIF, canonical base64 syntax,
+`protocol/prompt.ts` owns `{mediaType, data}`: JPEG/PNG/WebP/GIF, base64 syntax,
 at most 220,000 characters each, four images, 700,000 characters total. Create and steer
 Schema-decode it. The Session DO records images in `created` and `prompt.requested`, folds
 them into requests, and sends the same payload on reconnect. Idempotency compares images as
@@ -696,6 +696,6 @@ blocks. Conversation snapshots render images from durable prompt requests.
 These bounds fit [Worker RPC](https://developers.cloudflare.com/workers/runtime-apis/rpc/)
 and [WebSocket](https://developers.cloudflare.com/workers/runtime-apis/websockets/) limits
 of 32 MiB, and the [DO SQLite row limit](https://developers.cloudflare.com/durable-objects/platform/limits/)
-of 8 MB (checked 2026-11-16). JSON escaping means a 256 Ki-character text prompt plus images
-can exceed 1 MiB; the image bound is not a claim about total JSON size. No separate upload
-service is needed. Conversation snapshots grow with retained prompts, as before.
+of 8 MB (checked 2026-11-16). The supervisor also enforces a 1 MiB inbound frame cap. Create/steer therefore bound
+the serialized text and images to 1,000,000 bytes, leaving room for its command envelope;
+JSON escaping counts toward that bound. No separate upload service is needed. Conversation snapshots grow with retained prompts, as before.

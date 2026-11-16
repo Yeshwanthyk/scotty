@@ -1,4 +1,4 @@
-import { PromptImages } from "../../protocol/prompt.js";
+import { PromptImages, promptFits } from "../../protocol/prompt.js";
 import { AgentDefaults, stageAgentDefaults } from "../session/agents/agent-settings.js";
 import { Config, Effect, Exit, Result, Schema, Stream } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
@@ -53,7 +53,11 @@ const Create = Schema.Struct({
   idleAfter: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 10_000, maximum: 600_000 })),
   ),
-});
+}).check(
+  Schema.makeFilter(({ prompt, images }) => promptFits(prompt, images), {
+    expected: "text and images fitting within 1 MB encoded",
+  }),
+);
 const Callback = Schema.Union([
   Schema.Struct({
     state: Schema.String.check(Schema.isPattern(/^[a-f0-9-]{36}$/)),
@@ -86,7 +90,11 @@ const Steer = Schema.Struct({
   images: Schema.optionalKey(PromptImages),
   turn: Schema.String,
   req: Schema.optional(RequestId),
-});
+}).check(
+  Schema.makeFilter(({ text, images }) => promptFits(text, images), {
+    expected: "text and images fitting within 1 MB encoded",
+  }),
+);
 const Interrupt = Schema.Struct({ turn: Schema.String, req: Schema.optional(RequestId) });
 const Resume = Schema.fromJsonString(Schema.Struct({ size: Schema.optionalKey(Size) }));
 const path =
