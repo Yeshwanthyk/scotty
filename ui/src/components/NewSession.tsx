@@ -24,6 +24,7 @@ import { Composer } from "./Composer";
 import { Icon, Spinner } from "./Icon";
 import { SidebarButton } from "./Layout";
 import { Segmented } from "./Segmented";
+import { RepoPicker } from "./RepoPicker";
 import { SizePicker } from "./SizePicker";
 import { StatusMark } from "./Sidebar";
 
@@ -331,7 +332,7 @@ export function NewSession() {
     remember(lastAgentKey, next);
   }
   function paste(event: ClipboardEvent) {
-    if (prompt.trim() !== "") return;
+    if (event.target instanceof HTMLInputElement || prompt.trim() !== "") return;
     const link = fromLink(event.clipboardData.getData("text"));
     if (link === undefined) return;
     event.preventDefault();
@@ -437,23 +438,17 @@ export function NewSession() {
             autoFocus
             card
           >
-            <label className="repo-picker">
-              <Icon name="repo" size={14} />
-              <input
-                value={repo}
-                onChange={(event) => {
-                  setRepo(event.target.value);
-                  setFilled("");
-                }}
-                placeholder="owner/repo"
-                aria-label="Repository"
-                aria-invalid={repo !== "" && !validRepo}
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                style={{ width: `${Math.max(10, repo.length + 1)}ch` }}
-              />
-            </label>
+            <RepoPicker
+              value={repo}
+              known={[
+                ...defaults.map((item) => item.repo),
+                ...(list ?? []).map((session) => session.display.repository),
+              ]}
+              onChange={(value) => {
+                setRepo(fromLink(value)?.repo ?? value);
+                setFilled("");
+              }}
+            />
             <Segmented
               label="Agent"
               options={[

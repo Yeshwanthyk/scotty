@@ -37,6 +37,16 @@ import {
   type SourceSpec,
 } from "../settings/skills.js";
 
+const CatalogQuery = Schema.Struct({
+  page: Schema.NumberFromString.check(
+    Schema.isInt(),
+    Schema.isBetween({ minimum: 1, maximum: 1000000 }),
+  ),
+  perPage: Schema.NumberFromString.check(
+    Schema.isInt(),
+    Schema.isBetween({ minimum: 1, maximum: 100 }),
+  ),
+});
 const Create = Schema.Struct({
   title: Schema.String.check(Schema.isMinLength(1)),
   repo: Repo,
@@ -259,6 +269,22 @@ export function apiHandler(
       if (!(yield* credential.setClaudeStyle(body.skill)))
         return yield* bad(`No skill named ${body.skill}`, 404);
       return yield* HttpServerResponse.json({ claudeStyle: body.skill });
+    }
+    if (url.pathname === "/api/repositories" && request.method === "GET") {
+      const query = yield* Schema.decodeUnknownEffect(CatalogQuery)({
+        page: url.searchParams.get("page") ?? "1",
+        perPage: url.searchParams.get("perPage") ?? "100",
+      }).pipe(
+        Effect.catchTag("SchemaError", () =>
+          bad("Expected page >= 1 and perPage between 1 and 100"),
+        ),
+      );
+      if (HttpServerResponse.isHttpServerResponse(query)) return query;
+      const result = yield* credential.repositories(query.page, query.perPage);
+      if (result.status === "signed-out")
+        return yield* bad("Add a GitHub token to browse repositories", 400, githubHint);
+      if (result.status === "failed") return yield* bad(result.message, 502, githubHint);
+      return yield* HttpServerResponse.json({ repos: result.repos, nextPage: result.nextPage });
     }
     if (url.pathname === "/api/repos" && request.method === "GET")
       return yield* HttpServerResponse.json({ repos: yield* credential.repoSettings() });

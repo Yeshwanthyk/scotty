@@ -20,7 +20,14 @@ import {
   McpSignIn,
 } from "./connections.js";
 import { authorizeMcp, refreshMcp, StoredMcpOAuth } from "./mcp-oauth.js";
-import { defaultBranch, proxy, type ProxyRequest, resolveCommit, tarball } from "./github.js";
+import {
+  defaultBranch,
+  repositories,
+  proxy,
+  type ProxyRequest,
+  resolveCommit,
+  tarball,
+} from "./github.js";
 import type { SourceSpec } from "../settings/skills.js";
 import { isLoopback } from "../loopback.js";
 import { searchText } from "../session/search.js";
@@ -1263,6 +1270,17 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             return { token: row.token };
           }),
         // GitHub requests that need the token run here; only their answers leave this object.
+        repositories: (page: number, perPage: number) =>
+          Effect.gen(function* () {
+            const row = yield* gitHub;
+            if (row === null) return { status: "signed-out" as const };
+            return yield* repositories(page, perPage, row.token).pipe(
+              Effect.map((catalog) => ({ status: "found" as const, ...catalog })),
+              Effect.catchTag("RepositoryFailure", (error) =>
+                Effect.succeed({ status: "failed" as const, message: error.message }),
+              ),
+            );
+          }),
         defaultBranch: (repo: string) =>
           Effect.gen(function* () {
             const row = yield* gitHub;

@@ -3144,6 +3144,39 @@ button.diff-line[data-kind="fold"] {
   font-weight: 400;
 }
 
+.repository-combobox {
+  position: relative;
+}
+.repository-options {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  width: min(360px, calc(100vw - 56px));
+  max-height: min(300px, 45vh);
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px #0002;
+  padding: 4px;
+}
+.repository-status {
+  padding: 8px;
+  white-space: normal;
+  line-height: 1.4;
+}
+.repository-options .menu-item {
+  cursor: pointer;
+}
+.repository-options [aria-selected="true"] {
+  background: var(--selected);
+}
+.repository-options .menu-text {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 /* The pill shows the size's name; its menu lists what each size has and costs. */
 .size-picker {
   flex: none;
