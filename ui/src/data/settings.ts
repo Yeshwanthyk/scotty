@@ -1,3 +1,4 @@
+import { AgentDefaults } from "../../../src/session/agents/agent-settings";
 import { Option, Schema } from "effect";
 import {
   Connection,
@@ -256,4 +257,17 @@ export async function setToolPolicy(name: string, policy: typeof ToolPolicy.Type
     ),
     "policy",
   );
+}
+
+export type AgentDefaults = typeof AgentDefaults.Type;
+const decodeAgentDefaults = Schema.decodeUnknownOption(AgentDefaults);
+export async function agentDefaults(signal?: AbortSignal): Promise<AgentDefaults> {
+  const result = Option.getOrUndefined(
+    decodeAgentDefaults(await request("/api/settings/agents", undefined, signal)),
+  );
+  if (result === undefined) throw new Error("Unreadable agent defaults");
+  return result;
+}
+export async function saveAgentDefaults(value: AgentDefaults): Promise<void> {
+  await request("/api/settings/agents", value, undefined, undefined, "PUT");
 }

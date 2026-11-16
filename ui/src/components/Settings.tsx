@@ -1,3 +1,5 @@
+import { AgentSettings } from "../../../src/session/agents/agent-settings";
+import { readAppearance, saveAppearance, type Appearance } from "../theme/appearance";
 import { Option, Schema } from "effect";
 import { SignaturePreset, signaturePresets } from "../../../src/hooks/config";
 import { Link } from "@tanstack/react-router";
@@ -5,6 +7,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { message } from "../data/core";
 import { ago } from "../data/status";
 import {
+  agentDefaults,
+  saveAgentDefaults,
+  type AgentDefaults,
   accounts,
   addConnection,
   connectMcp,
@@ -44,6 +49,7 @@ import { SidebarButton } from "./Layout";
 import { SizePicker } from "./SizePicker";
 
 export const sections = [
+  { id: "defaults", label: "Defaults", icon: "terminal", detail: "Agent, models and appearance" },
   { id: "accounts", label: "Accounts", icon: "globe", detail: "ChatGPT, Claude and GitHub" },
   { id: "instructions", label: "Instructions", icon: "file", detail: "Added to every session" },
   { id: "skills", label: "Skills", icon: "list", detail: "Installed in new sessions" },
@@ -132,7 +138,9 @@ export function SettingsPage({ section }: { section?: Section }) {
               {data.error}
             </p>
           ) : null}
-          {data.settings === undefined || data.accounts === undefined ? (
+          {shown === "defaults" ? (
+            <Defaults />
+          ) : data.settings === undefined || data.accounts === undefined ? (
             data.error ? null : (
               <div className="settings-card" aria-busy="true">
                 <div className="settings-row">
@@ -1771,5 +1779,149 @@ function SignedIn({ email }: { email: string | null }) {
         </a>
       </Row>
     </div>
+  );
+}
+
+function Defaults() {
+  const [saved, setSaved] = useState<AgentDefaults>();
+  const [draft, setDraft] = useState<AgentDefaults>();
+  const [appearance, setAppearance] = useState<Appearance>(readAppearance);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const abort = new AbortController();
+    agentDefaults(abort.signal).then(
+      (value) => {
+        setSaved(value);
+        setDraft(value);
+      },
+      (failure) => {
+        if (!abort.signal.aborted) setError(message(failure, "Could not load defaults"));
+      },
+    );
+    return () => abort.abort();
+  }, []);
+  async function save() {
+    if (draft === undefined) return;
+    setBusy(true);
+    setError("");
+    try {
+      await saveAgentDefaults(draft);
+      setSaved(draft);
+    } catch (failure) {
+      setError(message(failure, "Could not save defaults"));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <>
+      <p className="settings-intro">
+        Choose the agent for new sessions and the model and effort used when each agent starts.
+      </p>
+      <div className="settings-card agent-defaults">
+        {draft === undefined ? (
+          <Row
+            title={error ? "Agent defaults unavailable" : "Loading agent defaults…"}
+            detail="Saved defaults are unchanged"
+          />
+        ) : (
+          <>
+            <Row title="Default agent" detail="For new sessions">
+              <select
+                className="field"
+                aria-label="Default agent"
+                value={draft.agent}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    agent: event.target.value === "claude" ? "claude" : "codex",
+                  })
+                }
+              >
+                <option value="codex">Codex</option>
+                <option value="claude">Claude</option>
+              </select>
+            </Row>
+            {(["codex", "claude"] as const).map((kind) => (
+              <Row
+                key={kind}
+                title={kind === "codex" ? "Codex" : "Claude"}
+                detail="Use a model available to your signed-in account"
+              >
+                <div className="agent-fields">
+                  <label>
+                    Model
+                    <input
+                      className="field"
+                      aria-label={`${kind} model`}
+                      value={draft[kind].model}
+                      onChange={(event) =>
+                        setDraft({
+                          ...draft,
+                          [kind]: { ...draft[kind], model: event.target.value },
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    Effort
+                    <select
+                      className="field"
+                      aria-label={`${kind} effort`}
+                      value={draft[kind].effort}
+                      onChange={(event) => {
+                        const effort = AgentSettings.fields.effort.literals.find(
+                          (item) => item === event.target.value,
+                        );
+                        if (effort !== undefined)
+                          setDraft({ ...draft, [kind]: { ...draft[kind], effort } });
+                      }}
+                    >
+                      {AgentSettings.fields.effort.literals.map((effort) => (
+                        <option key={effort}>{effort}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </Row>
+            ))}
+            <Row title="Save agent defaults" detail="Applies when an agent next starts">
+              <button
+                className="button pressable"
+                disabled={
+                  busy ||
+                  JSON.stringify(saved) === JSON.stringify(draft) ||
+                  !draft.codex.model.trim() ||
+                  !draft.claude.model.trim()
+                }
+                onClick={() => void save()}
+              >
+                {busy ? "Saving…" : "Save"}
+              </button>
+            </Row>
+          </>
+        )}
+        <Row title="Appearance" detail="Saved in this browser">
+          <select
+            className="field"
+            aria-label="Appearance"
+            value={appearance}
+            onChange={(event) => {
+              const next = event.target.value;
+              if (next === "system" || next === "light" || next === "dark") {
+                setAppearance(next);
+                saveAppearance(next);
+              }
+            }}
+          >
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </Row>
+        <Problem text={error} />
+      </div>
+    </>
   );
 }

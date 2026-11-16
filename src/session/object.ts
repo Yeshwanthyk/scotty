@@ -28,11 +28,7 @@ import CredsObject from "../creds/object.js";
 import { type ConnectionMetadata, internalUrl } from "../creds/connections.js";
 import * as claude from "./agents/claude.js";
 import * as codex from "./agents/codex.js";
-import {
-  AgentSettings,
-  defaultClaudeSettings,
-  defaultCodexSettings,
-} from "./agents/agent-settings.js";
+import { AgentSettings, stageAgentDefaults } from "./agents/agent-settings.js";
 import type { AgentKind, Origin } from "./events.js";
 import { instructionsKey, sourceKey } from "../settings/skills.js";
 import type { Command } from "./commands.js";
@@ -328,27 +324,8 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                     .claudeToken()
                     .pipe(Effect.map((token) => claude.startConfig(token, settings))),
               } satisfies Record<typeof AgentKind.Type, unknown>;
-              // The stage's model and effort for this agent, from the Worker's plain vars.
-              const stage = {
-                codex: {
-                  model: "SCOTTY_CODEX_MODEL",
-                  effort: "SCOTTY_CODEX_EFFORT",
-                  fallback: defaultCodexSettings,
-                },
-                claude: {
-                  model: "SCOTTY_CLAUDE_MODEL",
-                  effort: "SCOTTY_CLAUDE_EFFORT",
-                  fallback: defaultClaudeSettings,
-                },
-              }[action.agentKind];
-              const settings = yield* Schema.decodeUnknownEffect(AgentSettings)({
-                model: yield* Config.String(stage.model).pipe(
-                  Config.withDefault(stage.fallback.model),
-                ),
-                effort: yield* Config.String(stage.effort).pipe(
-                  Config.withDefault(stage.fallback.effort),
-                ),
-              });
+              const defaults = yield* stageAgentDefaults(yield* owner.agentDefaults());
+              const settings = defaults[action.agentKind];
               // The scripted stand-in needs no account, so e2e runs without the owner's sign-ins.
               const signedIn = yield* Effect.exit(
                 action.scripted === true

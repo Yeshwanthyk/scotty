@@ -11,7 +11,13 @@ import {
 import { defaultSize, type Size } from "../../../src/places/place";
 import { create, lifecycle, message, type Session } from "../data/core";
 import { useSessions } from "../data/sessions-store";
-import { claudeStatus, repoDefaults, repoPattern, type RepoDefault } from "../data/settings";
+import {
+  agentDefaults,
+  claudeStatus,
+  repoDefaults,
+  repoPattern,
+  type RepoDefault,
+} from "../data/settings";
 import { ago, dormant, statusLabel, statusOf, type Status } from "../data/status";
 import { Composer } from "./Composer";
 import { Icon, Spinner } from "./Icon";
@@ -202,6 +208,9 @@ export function NewSession() {
   const [agent, setAgent] = useState<Agent>(() =>
     read(lastAgentKey) === "claude" ? "claude" : "codex",
   );
+  const agentPicked = useRef(false);
+  const [agentLoaded, setAgentLoaded] = useState(false);
+  const [agentError, setAgentError] = useState("");
   // An explicit size stays picked while the repository is edited.
   const [picked, setPicked] = useState<typeof Size.Type>();
   // Shown only: the Worker applies a repository's default to a create that names no size.
@@ -243,6 +252,17 @@ export function NewSession() {
   );
   useEffect(() => {
     const abort = new AbortController();
+    agentDefaults(abort.signal).then(
+      (defaults) => {
+        if (abort.signal.aborted) return;
+        if (!agentPicked.current) setAgent(defaults.agent);
+        setAgentLoaded(true);
+      },
+      () => {
+        if (!abort.signal.aborted && !agentPicked.current)
+          setAgentError("Could not load the default agent. Choose an agent to continue.");
+      },
+    );
     claudeStatus(abort.signal).then(
       (status) => setClaudeReady(status.status !== "signed-out"),
       () => setClaudeReady(false),
@@ -291,7 +311,7 @@ export function NewSession() {
     const y = ((event.clientY - box.top) / box.height - 0.5) * 12;
     field.current.style.translate = `${x.toFixed(1)}px ${y.toFixed(1)}px`;
   }
-  const chosen: Agent = agent === "claude" && claudeReady === false ? "codex" : agent;
+  const chosen = agent;
   const validRepo = repoPattern.test(repo.trim());
   const repoDefault = defaults.find((item) => item.repo === repo.trim().toLowerCase());
   const own = picked;
@@ -301,6 +321,9 @@ export function NewSession() {
       setClaudeHint(true);
       return;
     }
+    agentPicked.current = true;
+    setAgentLoaded(true);
+    setAgentError("");
     setClaudeHint(false);
     setAgent(next);
     remember(lastAgentKey, next);
@@ -330,6 +353,7 @@ export function NewSession() {
     }
   }
   async function submit() {
+    if (!agentLoaded || (chosen === "claude" && claudeReady !== true)) return;
     if (!validRepo) {
       setError("Pick a repository as owner/name");
       return;
@@ -403,6 +427,7 @@ export function NewSession() {
             onSubmit={() => void submit()}
             placeholder={`Ask ${agentName[chosen]} to build, fix or explain… or paste a GitHub link`}
             busy={busy}
+            disabled={!agentLoaded || (chosen === "claude" && claudeReady !== true)}
             autoFocus
             card
           >
@@ -440,6 +465,8 @@ export function NewSession() {
               onChange={setPicked}
             />
           </Composer>
+          {agentError ? <p role="alert">{agentError}</p> : null}
+          {!agentLoaded && !agentError ? <p>Loading default agent…</p> : null}
           {filled !== "" ? (
             <p className="composer-note">
               <Icon name="check" size={13} />
@@ -463,7 +490,7 @@ export function NewSession() {
               </span>
             </p>
           ) : null}
-          {claudeHint ? (
+          {claudeHint || (chosen === "claude" && claudeReady === false) ? (
             <p className="composer-note">
               <Icon name="alert" size={13} />
               <span>

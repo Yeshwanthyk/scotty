@@ -1,3 +1,4 @@
+import { AgentDefaults, stageAgentDefaults } from "../session/agents/agent-settings.js";
 import { Config, Effect, Exit, Result, Schema, Stream } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
@@ -204,6 +205,20 @@ export function apiHandler(
     }
     if (url.pathname === "/api/version" && request.method === "GET")
       return yield* HttpServerResponse.json({ version });
+    if (url.pathname === "/api/settings/agents" && request.method === "GET")
+      return yield* HttpServerResponse.json(
+        yield* stageAgentDefaults(yield* credential.agentDefaults()),
+      );
+    if (url.pathname === "/api/settings/agents" && request.method === "PUT") {
+      const body = yield* Schema.decodeUnknownEffect(AgentDefaults)(yield* request.json).pipe(
+        Effect.catchTag("SchemaError", () =>
+          bad("Expected a default agent, model and effort for Codex and Claude"),
+        ),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
+      yield* credential.setAgentDefaults(body);
+      return yield* HttpServerResponse.json(body);
+    }
     if (url.pathname === "/api/settings" && request.method === "GET") {
       const saved = yield* bucket.get(instructionsKey);
       return yield* HttpServerResponse.json({
@@ -554,7 +569,7 @@ export function apiHandler(
         repo: body.repo,
         prompt: body.prompt,
         title: body.title,
-        agent: body.agent ?? "codex",
+        agent: body.agent ?? (yield* stageAgentDefaults(yield* credential.agentDefaults())).agent,
         place: body.provider,
         ...(body.size === undefined ? {} : { size: body.size }),
         ...(body.scripted === true ? { scripted: true } : {}),

@@ -1,6 +1,7 @@
+import { appearanceScript, applyAppearance } from "../theme/appearance";
 import * as stylex from "@stylexjs/stylex";
 import { createRootRoute, HeadContent, Scripts } from "@tanstack/react-router";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import globalCss from "../global.css?url";
 import { colors } from "../theme/tokens.stylex";
 import { Layout } from "../components/Layout";
@@ -45,10 +46,21 @@ export const Route = createRootRoute({
 });
 
 function RootDocument({ children }: { children: ReactNode }) {
+  useEffect(() => {
+    applyAppearance();
+    const system = matchMedia("(prefers-color-scheme: dark)");
+    system.addEventListener("change", applyAppearance);
+    window.addEventListener("storage", applyAppearance);
+    return () => {
+      system.removeEventListener("change", applyAppearance);
+      window.removeEventListener("storage", applyAppearance);
+    };
+  }, []);
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <HeadContent />
+        <script dangerouslySetInnerHTML={{ __html: appearanceScript }} />
         {/* Here, not in `head`: HeadContent keeps only the last meta of each name. */}
         <meta name="theme-color" content="#fbfbfa" media="(prefers-color-scheme: light)" />
         <meta name="theme-color" content="#121211" media="(prefers-color-scheme: dark)" />
