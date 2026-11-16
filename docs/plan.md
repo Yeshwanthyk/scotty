@@ -65,7 +65,8 @@ Ship each piece as it passes, through a PR to `main`, then deploy to `scotty.yes
 - [x] Attach, paste and drop images; live `e2e images` passed for Codex and Claude, real Codex described two browser attachments, and desktop/mobile previews and retained conversation images passed after redeploy. Fold tests pin pending resend payloads.
 - [x] Search repository choices in New session; `e2e repositories` paged all 270 real GitHub repositories and rejected invalid queries, core e2e passed, and browser search/manual URL/keyboard/mobile selection retained standard-2 on the created private-repository session.
 - [x] Show startup stages at their actual boundaries; `e2e startup` passed five scripted Codex runs and a real Claude run, core reconnect and stop-resume passed, and a real Codex browser showed all four stages at 375 px. The log now splits start setup from dialing.
-- [ ] Diagnose the intermittent 50-second pre-hello wait; capture a slow run with `container.dial.started` to distinguish start setup from socket/provider readiness. No latency optimization is established.
+- [ ] Diagnose the intermittent 50-second pre-hello wait; capture a slow run with `container.dial.started` to distinguish start setup from socket/provider readiness. No latency optimization is established. Provider runtime-age evidence supports delayed runtime startup; lifecycle telemetry was denied (403), so image pull/unpack versus VM/network cost remains unresolved (design.md "Startup causal follow-up").
+- [ ] Preserve unchanged image layers with scoped persistent CI cache; prove the heavy tool layer is cached across two actual builds, then release and verify the image. This addresses proven identity churn, without claiming a startup latency fix.
 
 ## Open
 
