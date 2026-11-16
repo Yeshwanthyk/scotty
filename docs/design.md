@@ -592,6 +592,7 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
 ## Deploy
 
 - **Image:** CI builds the default image from `container/Dockerfile` (supervisor included), publishes it to a public OCI registry, and records its linux/amd64 manifest digest; `container/image.digest` pins it, and each CLI release embeds it. The image's `scotty.supervisor` label is `supervisorVersion` from `protocol/supervisor.ts`. No local Docker is needed to deploy or develop.
+- **Build cache:** the manually dispatched `image` workflow imports/exports GitHub Actions v2 cache through pinned `docker/build-push-action`, scoped to `scotty-image-linux-amd64`, with `mode=max` to retain intermediate build stages. Dockerfile instructions, copied inputs and resolved base-image identity invalidate dependent layers; rotate the scope or delete the cache for an intentional full rebuild. GitHub permits reads from the current/default/base branch, so a feature-branch cache does not seed main; eviction or a cold branch causes rebuilding. Workflow concurrency serializes writes per branch. The cache is an optimization, never the deployed image authority: `container/image.digest` remains authoritative. No credentials are passed to Dockerfile steps; Docker Hub login stays on the runner. Cache contents are repository-readable build outputs, not a secret store. [Docker cache documentation](https://docs.docker.com/build/cache/backends/gha/).
 - **Release:** `deploy/release.ts` bundles `deploy/entry.js` (Alchemy's generated Worker entry, reading the stage from the Worker's `ALCHEMY_STAGE`, so one bundle serves every stage) with rolldown and `@alchemy.run/cloudflare-runtime`, copies `ui/dist` without its prerender `server/`, and writes `release.json` (`version`, the pinned image, `supervisor`). Alchemy stays the Worker's runtime; it no longer deploys.
 - **Binary:** `deploy/compile.ts` builds a release, packs it with `skills/scotty/SKILL.md` into `dist/release.pack` (paths to base64), and compiles `cli/binary.ts` for darwin-arm64, darwin-x64 and linux-x64 with the pack embedded (`with { type: "file" }`); macOS binaries are ad-hoc signed. The binary unpacks the release into a temporary folder for a deploy. From a checkout the CLI builds the release in a `bun` subprocess instead, so the binary never bundles rolldown. `.github/workflows/release.yml` runs on a tag `v<version>`: it publishes the three tarballs, `checksums.txt` and `install.sh` on GitHub Releases, then writes `Formula/scotty.rb` (depends on `cloudflared`) to the tap `Yeshwanthyk/homebrew-scotty`.
 - **Deployer:** `scotty deploy` takes that release and `deploy/deployer.ts` applies it with direct Cloudflare API calls: it copies the pinned image into `registry.cloudflare.com/<account>/scotty@sha256:<digest>` over the OCI distribution API with short-lived registry credentials (verifying every digest, streaming blobs, never logging or persisting the credential), then makes or updates the bucket, the web app's assets (wrangler's hash: the first 32 hex of sha256(bytes + extension), so unchanged files are skipped), the Worker (both DOs, one migration `v1` only when its `SessionObject` namespace is new, the container entry with its image map, `SCOTTY_MAX_RUNNING`, and the plain-text vars Alchemy's runtime reads: `ALCHEMY_PHASE=runtime`, `ALCHEMY_WORKER_NAME`, `ALCHEMY_STACK_NAME`, `ALCHEMY_STAGE`, `ALCHEMY_CLOUDFLARE_ACCOUNT_ID`), the container app (Containers below), the custom domain, the Access applications (owner email only, one sign-in lasting 30 days; `/hooks/*` bypassed; `/mcp` with Managed OAuth), the preview record and the route. Proved on `main` by a spike (2026-09-29).
@@ -803,3 +804,56 @@ again. At 375 px the observed active steps were container, workspace, agent, fir
 with no horizontal overflow. Reloading during a resumed start completed normally. The
 screenshots show initialization and first-response waiting as distinct stages. All owned
 test sessions were stopped, and doctor passed.
+
+### Startup causal follow-up (2026-11-16)
+
+Read-only provider evidence strongly supports delayed runtime startup in the two slow
+post-rollout sessions above, without identifying image pull/unpack versus VM/network startup.
+Cloudflare GraphQL runtime rows each had count=1: session `310f8a319bf5489b8aa4ae41571da628`
+(ewr15) reported uptime 3900 ms at 06:11:30Z after durable start 06:10:33.333Z;
+`02d0b661fed14e069a1fc6e0efdc7f7c` (ord06) reported zero at 06:12:24Z and 3198 ms at
+06:12:27Z after start 06:11:34.209Z. Their hello delays were 53861/51521 ms, with
+correct answers 839/1391 ms later. Receipt time minus uptime suggests runtime birth near
+06:11:26.100Z/06:12:23.802Z; this is inferred, with unbounded ingestion delay, second-level
+receipt precision and unverified uptime semantics. It is not a lifecycle timestamp.
+Fast subsequent starts in each location are consistent with image availability, but a
+location contains multiple hosts and exposes no host cache-hit field. No application
+50-second backoff was found; the existing dial uses 10-second attempts and 500-ms spacing.
+
+OCI manifests for `70f2925f9f97e8d3b8fb1a9e1e2997ac5aead03487cd65f584b1441dde53e30c`
+and `aaf77437d718b67754380c73457fd7fa70b941df845244d417bdfece8805d001` had 14 layers
+each; eight changed, totaling 694108211 compressed descriptor bytes in the latter image.
+The unchanged tool-install instruction produced a new 573465137-byte layer without a
+persistent CI cache. This proves avoidable layer identity churn, not bytes pulled by
+Cloudflare or its contribution to elapsed startup. The workflow cache addresses that defect.
+
+Telemetry keys/query POSTs were denied (HTTP 403; keys code 10104,
+`no_access_to_workers_observability`); no credentials were refreshed or permissions changed.
+Missing evidence remains the ImagePulled, VMStarted, ContainerStarted and
+DurableObjectConnected timeline and image cache/preparation outcome for actors
+`257a1c54e7415fd2614ff01cf8618fc2a7d7aac45d4824f7a5d11189ac08a4af`
+(placement `6d90d7c2-e6e3-4858-bc5a-755c0418eecd`, ewr15) and
+`f254466c1b53e3207fdf2f09d70c7187fad02a371202258dd9b5f45a949037ba`
+(placement `90e11337-53db-4bcc-8e6c-7ea1d79e5d96`, ord06). Request those through permitted
+provider observability/support. Early ContainerStarted/listening would refute delayed runtime
+startup; early ImagePulled followed by late VMStarted would refute pulling as the dominant
+cost. If unavailable, capture per-dial result/error/elapsed and supervisor process-start/listen
+boundaries on one natural slow run. No user startup latency improvement is established.
+
+CI proof on source `ba678cdf90bff12c2b517977097c629b16838c11`: [cold build
+43819054782](https://github.com/Yeshwanthyk/scotty/actions/runs/43819054782) and [warm build
+43819218440](https://github.com/Yeshwanthyk/scotty/actions/runs/43819218440) both succeeded.
+The first reported zero cached steps; the second reported 18, including `[stage-1 2/10]`
+(tool installation), and imported the GitHub Actions cache. Both published manifest
+`sha256:a9328d35a9a0d1d8010b31e0c93d5fc7dc8990bc91684d5eabe00d22e5ceb09b`.
+OCI manifests fetched before/after the second publication matched in full, including all
+14 layer descriptors; the tool layer is 573465098 compressed bytes. This is one cold/warm
+pair proving reuse, not an alternating performance benchmark or startup latency result.
+The feature-branch cache is not visible to main; main's first build must seed its own cache.
+
+The pinned result was deployed to `scotty.yeshyendamuri.dev`; Cloudflare's instances API
+confirmed owned session `061fbd8b9d2946bb86420030542ea371` ran that exact image digest.
+`e2e core` passed create/answer, redeploy/reconnect, steering and interruption; doctor passed.
+The initial core start took 24981 ms from durable start to hello (one uncontrolled rollout
+observation, not a benchmark). No startup improvement is established. Both core sessions
+created for this change were stopped; preexisting sessions were not operated on.
