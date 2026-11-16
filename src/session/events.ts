@@ -78,6 +78,11 @@ export const SessionEvent = Schema.Union([
   }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("container.start"), gen: Schema.Natural }),
   Schema.Struct({
+    ...envelope,
+    kind: Schema.Literal("container.dial.started"),
+    gen: Schema.Natural,
+  }),
+  Schema.Struct({
     ...fromSupervisor,
     kind: Schema.Literal("sup.hello"),
     version: Schema.String,

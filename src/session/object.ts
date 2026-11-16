@@ -285,6 +285,8 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   connections,
                 });
               }
+              if (current(action.gen))
+                yield* append({ kind: "container.dial.started", gen: action.gen }, "session");
               // A new container takes a moment to listen, longer on a new host; retry until the
               // fold's container deadline before reporting dial.failed.
               yield* link

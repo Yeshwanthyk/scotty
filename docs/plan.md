@@ -64,7 +64,8 @@ Ship each piece as it passes, through a PR to `main`, then deploy to `scotty.yes
 - [x] Add System / Light / Dark appearance; live browser reload retained Dark and Light, System followed both preferred schemes, and model/effort fields fit at 375 px.
 - [x] Attach, paste and drop images; live `e2e images` passed for Codex and Claude, real Codex described two browser attachments, and desktop/mobile previews and retained conversation images passed after redeploy. Fold tests pin pending resend payloads.
 - [x] Search repository choices in New session; `e2e repositories` paged all 270 real GitHub repositories and rejected invalid queries, core e2e passed, and browser search/manual URL/keyboard/mobile selection retained standard-2 on the created private-repository session.
-- [ ] Show measured startup stages at their actual boundaries; verify startup, reconnect, stop/resume and the deployed browser.
+- [x] Show startup stages at their actual boundaries; `e2e startup` passed five scripted Codex runs and a real Claude run, core reconnect and stop-resume passed, and a real Codex browser showed all four stages at 375 px. The log now splits start setup from dialing.
+- [ ] Diagnose the intermittent 50-second pre-hello wait; capture a slow run with `container.dial.started` to distinguish start setup from socket/provider readiness. No latency optimization is established.
 
 ## Open
 

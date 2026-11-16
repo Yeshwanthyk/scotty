@@ -140,6 +140,8 @@ function step(state: State, event: SessionEvent): State {
   if (event.seq <= state.lastSeq) return state;
   const next = { ...state, lastSeq: event.seq };
   switch (event.kind) {
+    case "container.dial.started":
+      return next;
     case "created":
       return state.created === undefined
         ? { ...next, created: event, activeAt: event.at, size: event.size ?? defaultSize }

@@ -41,6 +41,7 @@ const program = Effect.gen(function* () {
       const start = at("container.start");
       const stages = [
         "container.start",
+        "container.dial.started",
         "sup.hello",
         "workspace.prepared",
         "workspace.ready",
@@ -65,6 +66,7 @@ const program = Effect.gen(function* () {
         JSON.stringify({
           run,
           id: session.id,
+          dialStarted: at("container.dial.started") - start,
           hello: at("sup.hello") - start,
           prepared: at("workspace.prepared") - start,
           workspace: at("workspace.ready") - start,
