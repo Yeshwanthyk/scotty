@@ -54,6 +54,17 @@ npm run --silent scotty -- doctor
 2. A fold bug gets a failing replay test; any other bug gets one failing e2e assertion.
 3. It is fixed when that test and `npm run e2e -- core` pass.
 
+## Owner trial fixes
+
+Ship each piece as it passes, through a PR to `main`, then deploy to `scotty.yeshyendamuri.dev`.
+
+- [x] Use an account-supported Codex default; `e2e drafts --real` completed with `gpt-6.1-sol`.
+- [x] Keep an explicitly chosen size while editing the repository; live browser retained `standard-2`, and `e2e drafts --real` read it back on the created session.
+- [ ] Save default agent/model/effort in Settings; read back and use on the next agent start.
+- [ ] Add System / Light / Dark appearance; browser choice survives reload.
+- [ ] Attach, paste and drop images; both agent adapters receive them, retries retain them, conversation displays them.
+- [ ] Choose a repository from a searchable list when starting directly.
+
 ## Open
 
 | Item | Title                        | Depends on | Status   |
