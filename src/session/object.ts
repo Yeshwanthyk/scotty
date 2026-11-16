@@ -289,18 +289,58 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 yield* append({ kind: "container.dial.started", gen: action.gen }, "session");
               // A new container takes a moment to listen, longer on a new host; retry until the
               // fold's container deadline before reporting dial.failed.
-              yield* link
-                .dial(port, action.gen, 0, () => current(action.gen))
-                .pipe(
-                  Effect.timeout("10 seconds"),
-                  Effect.retry({
-                    schedule: Schedule.spaced("500 millis").pipe(
-                      Schedule.upTo({ duration: Duration.millis(deadlines.container) }),
+              let attempt = log.history.filter(
+                (event) => event.kind === "container.dial.attempt" && event.gen === action.gen,
+              ).length;
+              const dial = Effect.gen(function* () {
+                const observed = ++attempt <= 16;
+                if (observed)
+                  yield* append(
+                    { kind: "container.dial.attempt", gen: action.gen, attempt },
+                    "session",
+                  );
+                const started = Date.now();
+                // Only the network operation is timed out, as before. Appends hold no network work.
+                yield* link
+                  .dial(port, action.gen, 0, () => current(action.gen))
+                  .pipe(
+                    Effect.timeout("10 seconds"),
+                    Effect.onExit((exit) =>
+                      observed
+                        ? append(
+                            {
+                              kind: "container.dial.result",
+                              gen: action.gen,
+                              attempt,
+                              elapsedMs: Date.now() - started,
+                              outcome: Exit.isSuccess(exit)
+                                ? current(action.gen)
+                                  ? "connected"
+                                  : "stale"
+                                : Cause.hasInterruptsOnly(exit.cause)
+                                  ? "interrupted"
+                                  : Option.exists(
+                                        Cause.findErrorOption(exit.cause),
+                                        Cause.isTimeoutError,
+                                      )
+                                    ? "timeout"
+                                    : "failed",
+                            },
+                            "session",
+                          ).pipe(Effect.asVoid)
+                        : Effect.void,
                     ),
-                    // Not container.running: it can still read false just after start().
-                    while: () => current(action.gen),
-                  }),
-                );
+                  );
+              });
+              yield* dial.pipe(
+                Effect.retry({
+                  schedule: Schedule.spaced("500 millis").pipe(
+                    Schedule.upTo({ duration: Duration.millis(deadlines.container) }),
+                  ),
+                  // Not container.running: it can still read false just after start().
+                  while: () => current(action.gen),
+                }),
+              );
               yield* watch(action.gen);
               return;
             }

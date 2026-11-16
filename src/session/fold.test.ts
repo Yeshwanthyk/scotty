@@ -14,6 +14,37 @@ import { conversationView, sessionView } from "./view.js";
 import { boot, check, created, delivered, hello, make, ready, start } from "./fold-fixtures.js";
 
 describe("session fold", () => {
+  it("startup diagnostics preserve state, commands and deadlines apart from log sequence", () => {
+    for (const state of [[created, start].reduce(fold, initial), boot()]) {
+      for (const event of [
+        make(20, "container.dial.attempt", { gen: 1, attempt: 1 }),
+        make(21, "container.dial.result", {
+          gen: 1,
+          attempt: 1,
+          elapsedMs: 10000,
+          outcome: "timeout",
+        }),
+      ]) {
+        const next = fold(state, event);
+        expect(next).toEqual({ ...state, lastSeq: event.seq });
+        expect(command(next, event)).toBeUndefined();
+        expect(deadline(next)).toEqual(deadline(state));
+      }
+    }
+    const withTiming = decodeSessionEvent({
+      ...hello,
+      startup: {
+        processOriginEstimate: 100,
+        listeningAt: 150,
+        listeningAgeMs: 50,
+        helloAgeMs: 70,
+      },
+    });
+    expect(fold([created, start].reduce(fold, initial), withTiming)).toEqual(
+      fold([created, start].reduce(fold, initial), hello),
+    );
+  });
+
   it("workspace preparation changes progress without releasing prompts or sliding deadlines", () => {
     let state = [created, start, hello].reduce(fold, initial);
     const pending = state.pending;

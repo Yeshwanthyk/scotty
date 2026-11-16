@@ -857,3 +857,23 @@ confirmed owned session `061fbd8b9d2946bb86420030542ea371` ran that exact image 
 The initial core start took 24981 ms from durable start to hello (one uncontrolled rollout
 observation, not a benchmark). No startup improvement is established. Both core sessions
 created for this change were stopped; preexisting sessions were not operated on.
+
+Startup diagnostics now carry optional hello timing metadata, so old images and saved logs
+remain readable. `helloAgeMs` and `listeningAgeMs` are monotonic process-uptime milliseconds;
+the latter is sampled immediately after `Bun.serve` returns. Their difference measures time
+from listening to hello construction on one clock. Durable start-to-hello minus hello process
+age localizes time before the supervisor process plus hello transit/receipt overhead; it does
+not depend on synchronizing the DO and container wall clocks. `processOriginEstimate` is
+container wall time minus process uptime, explicitly an estimate; `listeningAt` uses the
+container wall clock. Cross-host wall-clock offsets and clock-rate error are not calibrated.
+
+The Session DO records the first 16 initial-start dial attempts per generation and their
+results (connected, stale, failed, timeout or interrupted), with DO-clock elapsed milliseconds.
+It persists only the fixed outcome, never provider error text or response content. The attempt
+count survives DO reactivation through the log; later attempts and established-session redials
+are not instrumented. Existing timeouts, retry spacing, commands and fold deadlines remain
+unchanged. Diagnostic appends finish before/after the timed network effect and never hold the
+log's state-mutation permit across network work. They add bounded persistence overhead, so
+these observations cannot establish a latency speedup. Runtime uptime from the existing
+GraphQL rows can corroborate process age but retains the ingestion/semantics uncertainty
+above; this diagnostic path needs no inaccessible provider lifecycle telemetry.

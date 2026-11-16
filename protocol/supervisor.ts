@@ -125,6 +125,13 @@ export const ToSupervisor = Schema.Union([
   Schema.Struct({ ...envelope, type: Schema.Literal("interrupt"), req: identifier }),
   Schema.Struct({ ...envelope, type: Schema.Literal("ack"), ack: acknowledgement }),
 ]);
+// Milliseconds; process ages share the supervisor's monotonic uptime clock.
+export const StartupTiming = Schema.Struct({
+  processOriginEstimate: Schema.Finite,
+  listeningAt: Schema.Finite,
+  listeningAgeMs: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  helloAgeMs: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+});
 export const FromSupervisor = Schema.Union([
   Schema.Struct({ ...envelope, type: Schema.Literal("workspace_prepared") }),
   Schema.Struct({
@@ -132,6 +139,7 @@ export const FromSupervisor = Schema.Union([
     type: Schema.Literal("hello"),
     version: Schema.String,
     boot: Schema.String,
+    startup: Schema.optionalKey(StartupTiming),
   }),
   Schema.Struct({
     ...envelope,

@@ -3,6 +3,7 @@ import {
   FromSupervisor,
   type FromSupervisorMessage,
   supervisorVersion,
+  type StartupTiming,
 } from "../../protocol/supervisor.js";
 
 type WithoutEnvelope<T> = T extends { gen: number; n: number } ? Omit<T, "gen" | "n"> : never;
@@ -52,6 +53,7 @@ export function dial(
   state: Wire,
   gen: number,
   after: number,
+  startup?: typeof StartupTiming.Type,
 ):
   | { readonly conflict: true }
   | {
@@ -66,6 +68,7 @@ export function dial(
     n: 1,
     version: supervisorVersion,
     boot: state.boot,
+    ...(startup === undefined ? {} : { startup }),
   };
   const initialized: Wire =
     state.next === 1 ? { ...state, gen, next: 2, outbox: [greeting] } : { ...state, gen };
