@@ -51,6 +51,7 @@ export const Origin = Schema.Union([
 export type Origin = typeof Origin.Type;
 
 export const SessionEvent = Schema.Union([
+  Schema.Struct({ ...fromSupervisor, kind: Schema.Literal("workspace.prepared") }),
   Schema.Struct({
     ...envelope,
     kind: Schema.Literal("created"),
@@ -76,6 +77,11 @@ export const SessionEvent = Schema.Union([
     idleAfter: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("container.start"), gen: Schema.Natural }),
+  Schema.Struct({
+    ...envelope,
+    kind: Schema.Literal("container.dial.started"),
+    gen: Schema.Natural,
+  }),
   Schema.Struct({
     ...fromSupervisor,
     kind: Schema.Literal("sup.hello"),

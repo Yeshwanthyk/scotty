@@ -37,6 +37,7 @@ export type State = {
   readonly hello: boolean;
   readonly connected: boolean;
   readonly ready: boolean;
+  readonly prepared: boolean;
   readonly lastN: number;
   readonly lastAckN: number;
   readonly lastAckSeq: number;
@@ -88,6 +89,7 @@ export const initial: State = {
   hello: false,
   connected: false,
   ready: false,
+  prepared: false,
   lastN: 0,
   lastAckN: 0,
   lastAckSeq: 0,

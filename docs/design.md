@@ -718,3 +718,88 @@ cache or persistent state is added. `/api/repos` keeps its saved-size settings c
 Proof: `e2e repositories` reads real GitHub pages with the stored account, follows the full
 catalog, and rejects malformed pagination. Browser verification covers search, keyboard,
 manual URL entry, mobile fit and session repository/size readback.
+
+### Startup stages and measured limits
+
+The supervisor emits `workspace.prepared` after clone/restore, instructions, skills and style
+installation, before constructing and starting the agent runner. The Session DO accepts it
+with the same generation/sequence rules as other supervisor output. It changes progress only:
+`workspace.ready` still means the runner is ready, releases queued prompts and clears the
+existing workspace deadline. Reconnect replays the prepared event; resume resets preparation.
+The UI shows container, workspace, agent initialization, then waiting for the first response.
+Agent initialization is no longer charged to workspace preparation, and a ready agent awaiting
+model output is no longer labelled as starting.
+
+On main at `768a243`, five sequential fresh scripted Codex sessions on 2026-11-16 used
+`_scotty/fixture`, `standard-1`, `say startup-ready`, no concurrent test sessions, and the
+existing deployed image. All five returned the expected completed answer; none failed.
+Times below are milliseconds from durable `container.start`, using server event timestamps,
+not client polling intervals. They exclude create-request latency and include prompt delivery
+and first answer. Each container was stopped after its run. Host load was 2.48 on 12 cores;
+the workload ran remotely. Placement and image-cache warmth were uncontrolled.
+
+| Session                          | Supervisor hello | Agent ready | Completed answer |
+| -------------------------------- | ---------------: | ----------: | ---------------: |
+| 058ccff37ff743a696f858d7ee5aefc3 |             1946 |        3440 |             3530 |
+| 137ca31d3382438288579fcd783d2a01 |             1548 |        3031 |             3132 |
+| a25871e8f92a47f0b6471d701b60f20d |              823 |        1669 |             1730 |
+| 8afa7ddd3cab4e00a010d0b9ddf71758 |             1516 |        3053 |             3173 |
+| cf5651ffe70d43fa88a8010419d1c5bc |              871 |        1647 |             1703 |
+
+Median completed answer: 3132 ms, range 1703–3530 ms (n=5).
+The saved startup-progress log has no workspace-prepared boundary; the new startup e2e
+requires it before readiness, delivery and a successful answer. The historical owner trace
+spent 64261 ms before hello and reached readiness at 70056 ms. This sample did not reproduce
+that long wait. Existing events cannot distinguish provider placement/image provisioning
+from socket dialing before hello. No root cause or latency improvement is established;
+these progress corrections do not claim a speedup, and no cache or infrastructure change
+is justified by these runs. `e2e startup` reports each boundary and checks the answer; `--real`
+runs one real-agent smoke test rather than treating model response time as a scripted benchmark.
+
+The follow-up after rolling out the progress image reproduced the long wait twice in five
+successful scripted starts (same fixture, size and prompt):
+
+| Session                          | Supervisor hello | Prepared | Agent ready | Completed answer |
+| -------------------------------- | ---------------: | -------: | ----------: | ---------------: |
+| 310f8a319bf5489b8aa4ae41571da628 |            53861 |    54374 |       54648 |            54700 |
+| e9f3399fcd9f48938537b37a7dc8b489 |              778 |     1388 |        1644 |             1699 |
+| 02d0b661fed14e069a1fc6e0efdc7f7c |            51521 |    52359 |       52819 |            52912 |
+| 4d50cd9697dd49829e93ff28138e9fe7 |              762 |     1312 |        1553 |             1612 |
+| 3e3272f3bb894ee396d854e45889c1f0 |             1300 |     1775 |        2059 |             2123 |
+
+Median answer 2123 ms, range 1612–54700 ms (n=5; zero failures or excluded runs).
+This was not an alternating controlled before/after benchmark: a new image had just rolled
+out, and provider placement/cache state was uncontrolled. It establishes variability and
+localizes the slow portion before hello; it does not establish a speedup or regression.
+`container.dial.started` now records when container-start setup has returned and dialing
+begins, without changing state, commands or deadlines. The interval before that event covers
+claim/configuration/interceptors/start; after it and before hello covers port/socket readiness
+and its existing retries. It prevents future pre-hello delays from being conflated with
+workspace preparation or model response time.
+
+With this additional boundary deployed, five further identical scripted starts passed, all
+with the expected completed answer and no invariant failures:
+
+| Session                          | Dial begins | Supervisor hello | Prepared | Agent ready | Completed answer |
+| -------------------------------- | ----------: | ---------------: | -------: | ----------: | ---------------: |
+| f3ccda7d9f9943c7b8001530cf6d0eaf |         113 |              751 |     1260 |        1514 |             1568 |
+| 1ba615f0bc5446ef85e76615220d182f |         123 |             1329 |     2012 |        2293 |             2357 |
+| c18ebe0d4e454a39924f0c5d2beb0437 |         125 |             1336 |     1959 |        2272 |             2338 |
+| 0fa64d7c9a38401c8e991c4880644d73 |         119 |             1293 |     2023 |        2496 |             2585 |
+| b74f873c7d124daaa778906ce7139d2e |         135 |              818 |     1381 |        1671 |             1742 |
+
+Median answer 2338 ms, range 1568–2585 ms (n=5; zero failures or exclusions).
+Start setup was 113–135 ms in these runs; the long stall did not recur with this probe.
+Consequently the slow runs still cannot be assigned specifically to setup or socket/provider
+readiness. The permanent boundary will distinguish them on the next occurrence. No latency
+optimization was made. Both a slow log and a log with the new boundaries are saved as replays.
+
+Deployment proof: `e2e core` passed create/answer, Worker redeploy/reconnect, steer, mid-turn
+steer and interruption. `e2e stop-resume` preserved the thread, marker file and deletion, then
+recovered from an agent crash. `e2e startup --agent claude --real` returned `startup-ready`
+with all boundaries ordered (one smoke run; 5737 ms to completed answer, not a benchmark).
+Real Codex browser session `fa2f5763472b45e7a4eb2cff8584a567` answered, resumed and answered
+again. At 375 px the observed active steps were container, workspace, agent, first response,
+with no horizontal overflow. Reloading during a resumed start completed normally. The
+screenshots show initialization and first-response waiting as distinct stages. All owned
+test sessions were stopped, and doctor passed.

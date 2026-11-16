@@ -16,6 +16,8 @@ export const supervisorEvent = (
           version: message.version,
           boot: message.boot,
         };
+      case "workspace_prepared":
+        return { kind: "workspace.prepared", gen: message.gen, n: message.n };
       case "workspace_ready":
         return {
           kind: "workspace.ready",

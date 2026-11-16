@@ -249,11 +249,13 @@ function SessionView({ sessionId }: { sessionId: string }) {
   const agentStarting = waiting && (booted || turns.length === 1);
   const bootStep =
     detail?.authority.kind === "transitioning"
-      ? detail.authority.phase === "workspace"
-        ? 1
-        : 0
-      : agentStarting
+      ? detail.authority.phase === "agent"
         ? 2
+        : detail.authority.phase === "workspace"
+          ? 1
+          : 0
+      : agentStarting
+        ? 3
         : undefined;
   const mode: ThreadMode = bootStep !== undefined ? "booting" : working ? "live" : "dormant";
   const alert = error || linkNote[link];

@@ -81,6 +81,7 @@ export class Controller {
           agent,
           message.agent.kind === "claude" ? message.agent.style : undefined,
         );
+        this.send({ type: "workspace_prepared" }, message.gen);
         const scope = yield* Scope.make();
         this.scope = scope;
         const runner = yield* agent.runner(workspace.dir);
