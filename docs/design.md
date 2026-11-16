@@ -839,3 +839,21 @@ provider observability/support. Early ContainerStarted/listening would refute de
 startup; early ImagePulled followed by late VMStarted would refute pulling as the dominant
 cost. If unavailable, capture per-dial result/error/elapsed and supervisor process-start/listen
 boundaries on one natural slow run. No user startup latency improvement is established.
+
+CI proof on source `ba678cdf90bff12c2b517977097c629b16838c11`: [cold build
+43819054782](https://github.com/Yeshwanthyk/scotty/actions/runs/43819054782) and [warm build
+43819218440](https://github.com/Yeshwanthyk/scotty/actions/runs/43819218440) both succeeded.
+The first reported zero cached steps; the second reported 18, including `[stage-1 2/10]`
+(tool installation), and imported the GitHub Actions cache. Both published manifest
+`sha256:a9328d35a9a0d1d8010b31e0c93d5fc7dc8990bc91684d5eabe00d22e5ceb09b`.
+OCI manifests fetched before/after the second publication matched in full, including all
+14 layer descriptors; the tool layer is 573465098 compressed bytes. This is one cold/warm
+pair proving reuse, not an alternating performance benchmark or startup latency result.
+The feature-branch cache is not visible to main; main's first build must seed its own cache.
+
+The pinned result was deployed to `scotty.yeshyendamuri.dev`; Cloudflare's instances API
+confirmed owned session `061fbd8b9d2946bb86420030542ea371` ran that exact image digest.
+`e2e core` passed create/answer, redeploy/reconnect, steering and interruption; doctor passed.
+The initial core start took 24981 ms from durable start to hello (one uncontrolled rollout
+observation, not a benchmark). No startup improvement is established. Both core sessions
+created for this change were stopped; preexisting sessions were not operated on.
