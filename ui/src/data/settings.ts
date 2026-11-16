@@ -73,6 +73,17 @@ const GitHubSet = Schema.Union([
   Schema.Struct({ status: Schema.Literal("refused"), httpStatus: Schema.Number }),
 ]);
 export const repoPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const RepositoryCatalog = Schema.Struct({
+  repos: Schema.Array(Schema.String.check(Schema.isPattern(repoPattern))),
+  nextPage: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
+});
+export async function repositoryCatalog(page: number, signal: AbortSignal) {
+  return decode(
+    RepositoryCatalog,
+    await request(`/api/repositories?page=${page}`, undefined, signal),
+    "GitHub repositories",
+  );
+}
 const Repos = Schema.Struct({
   repos: Schema.Array(Schema.Struct({ repo: Schema.String, size: Size })),
 });

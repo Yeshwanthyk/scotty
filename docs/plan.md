@@ -63,6 +63,7 @@ Ship each piece as it passes, through a PR to `main`, then deploy to `scotty.yes
 - [x] Save default agent/model/effort in Settings; `e2e defaults --real` saved/read back, rejected invalid values, selected the default agent and used saved model/effort at a real start; browser Save survived reload.
 - [x] Add System / Light / Dark appearance; live browser reload retained Dark and Light, System followed both preferred schemes, and model/effort fields fit at 375 px.
 - [x] Attach, paste and drop images; live `e2e images` passed for Codex and Claude, real Codex described two browser attachments, and desktop/mobile previews and retained conversation images passed after redeploy. Fold tests pin pending resend payloads.
+- [x] Search repository choices in New session; `e2e repositories` paged all 270 real GitHub repositories and rejected invalid queries, core e2e passed, and browser search/manual URL/keyboard/mobile selection retained standard-2 on the created private-repository session.
 - [ ] Choose a repository from a searchable list when starting directly.
 
 ## Open

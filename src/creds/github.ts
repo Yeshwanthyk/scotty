@@ -1,4 +1,5 @@
 import { Effect, Schema } from "effect";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { SourceFailure, type SourceSpec } from "../settings/skills.js";
 
 // GitHub requests that need the owner's token. Only the Creds DO calls these: the token never
@@ -16,6 +17,48 @@ class RepositoryFailure extends Schema.TaggedError<RepositoryFailure>()("Reposit
   // GitHub says the repository doesn't exist, or the token can't see it.
   missing: Schema.optionalKey(Schema.Literal(true)),
 }) {}
+
+// The caller pages explicitly; only names and continuation leave the Creds DO.
+const Catalog = Schema.Array(
+  Schema.Struct({
+    full_name: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)),
+  }),
+);
+export const repositories = (page: number, perPage: number, token: string) =>
+  Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient;
+    const response = yield* client
+      .execute(
+        HttpClientRequest.get("https://api.github.com/user/repos").pipe(
+          HttpClientRequest.setHeaders(headers(token, "application/vnd.github+json")),
+          HttpClientRequest.setUrlParams({
+            page,
+            per_page: perPage,
+            sort: "full_name",
+            direction: "asc",
+          }),
+        ),
+      )
+      .pipe(
+        Effect.mapError(
+          () => new RepositoryFailure({ message: "GitHub repositories unavailable" }),
+        ),
+      );
+    if (response.status !== 200)
+      return yield* new RepositoryFailure({
+        message: `GitHub repositories returned HTTP ${response.status}`,
+      });
+    const body = yield* response.json.pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(Catalog)),
+      Effect.mapError(
+        () => new RepositoryFailure({ message: "Invalid GitHub repository catalog" }),
+      ),
+    );
+    return {
+      repos: body.map((repo) => repo.full_name),
+      nextPage: /rel="next"/.test(response.headers.link ?? "") ? page + 1 : null,
+    };
+  }).pipe(Effect.scoped, Effect.provide(FetchHttpClient.layer));
 
 /** The default branch of a repository the token can reach. */
 export const defaultBranch = (repo: string, token: string) =>
