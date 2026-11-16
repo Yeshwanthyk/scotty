@@ -80,7 +80,7 @@ export function RepoPicker({
         aria-activedescendant={
           open && active >= 0 && choices[active] !== undefined ? `${id}-${active}` : undefined
         }
-        aria-invalid={value !== "" && !repoPattern.test(value.trim())}
+        aria-invalid={!open && value !== "" && !repoPattern.test(value.trim())}
         value={value}
         placeholder="Search or owner/repo"
         autoCapitalize="off"
