@@ -64,7 +64,6 @@ const add = Command.make("add", { source: Argument.String("source") }, ({ source
   }),
 );
 
-// No source refreshes every one.
 const refresh = Command.make(
   "refresh",
   { source: Argument.String("source").pipe(Argument.optional) },
@@ -115,7 +114,6 @@ const toggle = (name: "on" | "off") =>
     }),
   );
 
-// Claude sessions run the skill as their output style; setting one switches the skill on.
 const style = Command.make(
   "style",
   {

@@ -9,7 +9,6 @@ const acknowledgement = Schema.Int.check(
 );
 const envelope = { gen: sequence, n: sequence };
 const identifier = Schema.String.check(Schema.isMaxLength(256));
-// TOML basic strings permit escaped controls but never lone UTF-16 surrogates.
 const tomlString = Schema.String.check(
   Schema.isPattern(/^(?:[^\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])*$/),
 );
@@ -32,9 +31,7 @@ const mcp = Schema.optionalKey(
   ),
 );
 const skillName = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,63}$/));
-// Installed skills the agent hides, through its own skill settings.
 const skillsOff = Schema.optionalKey(Schema.Array(skillName));
-// The installed skill Claude uses as its output style.
 const style = Schema.optionalKey(skillName);
 const CodexAgent = Schema.Struct({
   kind: Schema.Literal("codex"),
@@ -46,7 +43,6 @@ const CodexAgent = Schema.Struct({
   token: credentialString,
   accountId: credentialString,
 });
-// The token is Claude's setup token; it goes only into the Claude process's environment.
 const ClaudeAgent = Schema.Struct({
   kind: Schema.Literal("claude"),
   mcp,
@@ -56,7 +52,6 @@ const ClaudeAgent = Schema.Struct({
   effort: Schema.Literals(["low", "medium", "high", "xhigh", "max"]),
   token: credentialString,
 });
-// e2e sessions run an agent's scripted stand-in (container/scripted/): no token.
 const ScriptedCodexAgent = Schema.Struct({
   kind: Schema.Literal("codex"),
   mcp,
@@ -79,10 +74,7 @@ export const AgentConfig = Schema.Union([
   ScriptedClaudeAgent,
 ]);
 const Kind = Schema.Literals(["codex", "claude"]);
-// n remains in the DO envelope for callers that number their sends; it is never
-// used by the supervisor to deduplicate, order, or acknowledge commands.
 export const ToSupervisor = Schema.Union([
-  // Oversized frames and invalid reqs receive a req-less protocol error.
   Schema.Struct({
     ...envelope,
     type: Schema.Literal("start"),
@@ -91,12 +83,8 @@ export const ToSupervisor = Schema.Union([
     branch: Schema.String,
     agent: AgentConfig,
     git: Schema.Struct({ name: tomlString, email: tomlString }),
-    // Preview URL for a port in this session, with `{port}` to fill in.
     hatch: Schema.String,
-    // The owner's instructions, appended to Scotty's.
     instructions: Schema.String,
-    // Skill sources, each a GitHub tarball already PUT to /skills by commit; the folder at path
-    // in it is unpacked into the agent's skills folder.
     skills: Schema.Array(
       Schema.Struct({
         commit: Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/)),
@@ -125,7 +113,6 @@ export const ToSupervisor = Schema.Union([
   Schema.Struct({ ...envelope, type: Schema.Literal("interrupt"), req: identifier }),
   Schema.Struct({ ...envelope, type: Schema.Literal("ack"), ack: acknowledgement }),
 ]);
-// Milliseconds; process ages share the supervisor's monotonic uptime clock.
 export const StartupTiming = Schema.Struct({
   processOriginEstimate: Schema.Finite,
   listeningAt: Schema.Finite,
@@ -186,13 +173,8 @@ export const FromSupervisor = Schema.Union([
 export type ToSupervisorMessage = Schema.Schema.Type<typeof ToSupervisor>;
 export type FromSupervisorMessage = Schema.Schema.Type<typeof FromSupervisor>;
 
-// The supervisor protocol this image speaks. container/Dockerfile's `scotty.supervisor` label
-// carries the same value, so an image built FROM ours can be checked before a deploy.
-// GET /terminals: the terminal sockets open now, which keep an idle session awake.
 export const Terminals = Schema.Struct({ open: Schema.Natural });
 
 export const supervisorVersion = "1";
 
-// A repository baked into the container image, so e2e sessions don't depend on GitHub. GitHub
-// owner names cannot contain "_", so no real repository has this name.
 export const fixtureRepo = "_scotty/fixture";

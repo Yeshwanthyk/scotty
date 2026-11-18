@@ -240,7 +240,6 @@ const program = Effect.gen(function* () {
       (yield* read(yield* steer(script("tools/call", "read")))).writes === 0,
       "Blocked write was forwarded",
     );
-    // Both calls arrive after expiry; a rotating server rejects a second use of the refresh token.
     const callBody = JSON.stringify({
       jsonrpc: "2.0",
       id: "refresh",

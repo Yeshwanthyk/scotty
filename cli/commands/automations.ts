@@ -15,7 +15,6 @@ const checkName = (name: string, command: string) =>
         command,
       );
 
-// One line a person reads: when it fires, what must match, and what it starts.
 const sentence = (automation: Automation) => {
   const when =
     automation.when.kind === "calendar"

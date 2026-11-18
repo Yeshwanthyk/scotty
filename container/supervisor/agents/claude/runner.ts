@@ -17,12 +17,10 @@ import {
 } from "../../runner.js";
 import { processEnv } from "../../runtime.js";
 
-// The native claude from the SDK's platform package, installed by the image.
 const executable = () =>
   processEnv("SCOTTY_CLAUDE") ||
   "/usr/local/lib/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude";
 
-// Claude's stderr tail goes into the event log; tokens never do.
 const redact = (line: string) =>
   line
     .replaceAll(String.fromCharCode(27), "")
@@ -32,7 +30,6 @@ const redact = (line: string) =>
     .replace(/bearer\s+\S+/gi, "Bearer [redacted]")
     .slice(0, 300);
 
-// Messages for the running query. Claude reads them as it is ready for them.
 class Inbox {
   private readonly items: SDKUserMessage[] = [];
   private wake: (() => void) | undefined;
@@ -45,7 +42,7 @@ class Inbox {
     this.done = true;
     this.wake?.();
   }
-  async *[Symbol.asyncIterator](): AsyncGenerator<SDKUserMessage> {
+  async *[Symbol.asyncIterator]() {
     while (true) {
       const next = this.items.shift();
       if (next !== undefined) yield next;
@@ -60,9 +57,7 @@ type Live = { readonly query: Query; readonly inbox: Inbox; readonly gen: number
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-// Keeps frames small: only text and thinking deltas of the stream, and only the patch
-// of a tool's structured result (Edit and Write; a new file's content), with long tool output cut.
-const slim = (message: SDKMessage): SDKMessage | undefined => {
+const slim: (message: SDKMessage) => SDKMessage | undefined = (message) => {
   if (message.type === "auth_status") return undefined;
   if (message.type === "stream_event") {
     const event = message.event;
@@ -115,7 +110,6 @@ export class ClaudeRunner implements Runner {
   private gen = 0;
   private closed = false;
   private readonly stderr: string[] = [];
-  // The DO turn Claude is working on, and the uuids of the messages sent into it.
   private activeDo: string | undefined;
   private readonly sent = new Set<string>();
   private interrupting: Deferred.Deferred<void> | undefined;
@@ -134,14 +128,13 @@ export class ClaudeRunner implements Runner {
     });
   }
 
-  private launch(resume: boolean): Effect.Effect<void> {
+  private launch(resume: boolean) {
     return Effect.gen({ self: this }, function* () {
       const session = this.session;
       const scope = this.scope;
       if (session === undefined || scope === undefined) return;
       const inbox = new Inbox();
       const gen = ++this.gen;
-      // e2e sessions run the scripted stand-in (container/scripted/claude.ts) with no token.
       const scripted = "scripted" in this.agent;
       const running = query({
         prompt: inbox,
@@ -150,7 +143,6 @@ export class ClaudeRunner implements Runner {
           pathToClaudeCodeExecutable: scripted
             ? "/usr/local/bin/scotty-claude-scripted"
             : executable(),
-          // env replaces the environment, so only these reach Claude and its commands.
           env: {
             ...this.env,
             PATH: processEnv("PATH"),
@@ -172,7 +164,6 @@ export class ClaudeRunner implements Runner {
           ...(scripted ? {} : { effort: this.agent.effort }),
           systemPrompt: { type: "preset", preset: "claude_code" },
           settingSources: ["user", "project"],
-          // Owner-switched-off skills are installed (other skills link into them) but hidden.
           settings: {
             ...(this.agent.style === undefined ? {} : { outputStyle: this.agent.style }),
             skillOverrides: Object.fromEntries(
@@ -197,11 +188,10 @@ export class ClaudeRunner implements Runner {
         Effect.andThen(this.exited(gen)),
         Effect.forkIn(scope),
       );
-    });
+    }) satisfies Effect.Effect<void>;
   }
 
-  // Claude ended on its own: the session stops and can resume.
-  private exited(gen: number): Effect.Effect<void> {
+  private exited(gen: number) {
     return Effect.gen({ self: this }, function* () {
       if (this.closed || gen !== this.gen) return;
       this.live = undefined;
@@ -211,10 +201,10 @@ export class ClaudeRunner implements Runner {
         code: "exit",
         message: `Claude exited${tail ? `: ${tail}` : ""}`.slice(0, 1000),
       });
-    });
+    }) satisfies Effect.Effect<void>;
   }
 
-  private receive(message: SDKMessage, gen: number): Effect.Effect<void> {
+  private receive(message: SDKMessage, gen: number) {
     return Effect.gen({ self: this }, function* () {
       if (gen !== this.gen) return;
       const event = slim(message);
@@ -222,19 +212,14 @@ export class ClaudeRunner implements Runner {
         yield* Queue.offer(this.output, { type: "agent", kind: "claude", event });
       if (message.type !== "result") return;
       const doTurn = this.activeDo;
-      // A result for nothing Scotty sent, or with more of the turn's messages still queued.
       if (doTurn === undefined || (message.queued_turn_count ?? 0) > 0) return;
       const answered = message.user_message_uuids ?? [];
       if (answered.length > 0 && !answered.some((uuid) => this.sent.has(uuid))) return;
       yield* this.end(doTurn, message.uuid, outcome(message, this.interrupting !== undefined));
-    });
+    }) satisfies Effect.Effect<void>;
   }
 
-  private end(
-    turn: string,
-    result: string,
-    state: "completed" | "interrupted" | "failed",
-  ): Effect.Effect<void> {
+  private end(turn: string, result: string, state: "completed" | "interrupted" | "failed") {
     return Effect.gen({ self: this }, function* () {
       this.activeDo = undefined;
       this.sent.clear();
@@ -242,13 +227,10 @@ export class ClaudeRunner implements Runner {
       yield* Queue.offer(this.output, { type: "turn_end", turn, codexTurn: result, state });
       if (this.interrupting !== undefined) yield* Deferred.succeed(this.interrupting, undefined);
       this.interrupting = undefined;
-    });
+    }) satisfies Effect.Effect<void>;
   }
 
-  start(
-    env: Record<string, string>,
-    threadId?: string,
-  ): Effect.Effect<AgentReady, AgentError, Scope.Scope> {
+  start(env: Record<string, string>, threadId?: string) {
     return Effect.gen({ self: this }, function* () {
       this.env = env;
       this.session = threadId ?? crypto.randomUUID();
@@ -260,25 +242,18 @@ export class ClaudeRunner implements Runner {
           this.live?.query.close();
         }),
       );
-      // Claude sends nothing until the first prompt, so the ID Scotty chose is the session.
       yield* this.launch(threadId !== undefined);
       return { kind: "claude", session: this.session };
-    });
+    }) satisfies Effect.Effect<AgentReady, AgentError, Scope.Scope>;
   }
 
-  send(
-    req: string,
-    turn: string,
-    text: string,
-    images: readonly PromptImage[] = [],
-  ): Effect.Effect<Delivered, AgentError> {
+  send(req: string, turn: string, text: string, images: readonly PromptImage[] = []) {
     return Effect.gen({ self: this }, function* () {
       const live = this.live;
       if (live === undefined || this.session === undefined)
         return yield* new AgentError({ code: "not_ready", message: "agent not ready" });
       if (this.endedDo.has(turn))
         return yield* new AgentError({ code: "stale", message: "turn already ended" });
-      // With a turn running, the message is a steer: Claude folds it into that turn.
       if (this.activeDo === undefined) this.activeDo = turn;
       const uuid = crypto.randomUUID();
       this.sent.add(uuid);
@@ -307,12 +282,10 @@ export class ClaudeRunner implements Runner {
         origin: { kind: "human" },
       });
       return { req };
-    });
+    }) satisfies Effect.Effect<Delivered, AgentError>;
   }
 
-  // Claude stops the turn and keeps its process. If no result comes within 3 s,
-  // the turn ends as interrupted and Claude restarts on the same session.
-  interrupt(_req: string): Effect.Effect<void, AgentError> {
+  interrupt(_req: string) {
     return Effect.gen({ self: this }, function* () {
       const live = this.live;
       const turn = this.activeDo;
@@ -331,6 +304,6 @@ export class ClaudeRunner implements Runner {
       live.query.close();
       yield* this.end(turn, crypto.randomUUID(), "interrupted");
       yield* this.launch(true);
-    });
+    }) satisfies Effect.Effect<void, AgentError>;
   }
 }

@@ -4,9 +4,6 @@ import type { AgentKind, SessionEvent } from "./events.js";
 import { fold, initial, type State } from "./fold.js";
 import { live } from "./state.js";
 
-// One container run: from the event that began its generation to the one that ended it, or
-// still open. A run counts from the start intent, so it includes the container's boot. Its size
-// is the fold's when the run begins: a running container never changes size.
 export type Run = {
   readonly gen: number;
   readonly size: typeof Size.Type;
@@ -14,13 +11,11 @@ export type Run = {
   readonly end: number | null;
 };
 
-// What one session's log says, read by replaying the fold; every time is an event's `at`.
 export type SessionStats = {
   readonly repo: string;
   readonly agentKind: typeof AgentKind.Type;
   readonly live: boolean;
   readonly runs: readonly Run[];
-  // When each turn ended, completed or cut off by a stop.
   readonly turns: readonly number[];
   readonly failures: readonly { readonly at: number; readonly code: string }[];
   readonly crashes: readonly { readonly at: number; readonly exitCode: number | null }[];
@@ -29,62 +24,63 @@ export type SessionStats = {
   readonly timeouts: readonly { readonly at: number; readonly op: string }[];
 };
 
-// Scheduled checks that fire in a healthy session; they say nothing went wrong.
 const routine = new Set(["idle", "watch", "redial"]);
-// Request timeouts are named per request (`req:<id>`); they are one kind.
-const timeoutKind = (op: string): string => (op.startsWith("req:") ? "request" : op);
+const timeoutKind: (op: string) => string = (op) => (op.startsWith("req:") ? "request" : op);
 
-// Null for a log without `created`, which a delete that stopped partway leaves.
-export function sessionStats(events: readonly SessionEvent[]): SessionStats | null {
-  let state: State = initial;
-  const runs: Run[] = [];
-  const turns: number[] = [];
-  const failures: { at: number; code: string }[] = [];
-  const crashes: { at: number; exitCode: number | null }[] = [];
-  const boots: { at: number; ms: number }[] = [];
-  const violations: number[] = [];
-  const timeouts: { at: number; op: string }[] = [];
-  for (const event of events) {
-    const before = state;
-    state = fold(before, event);
-    const gen = state.gen;
-    if (state.startSeq === event.seq && before.startSeq !== event.seq && gen !== undefined)
-      runs.push({ gen, size: state.size, start: event.at, end: null });
-    const open = runs.at(-1);
-    if (live(before) && !live(state) && open !== undefined && open.end === null) {
-      runs[runs.length - 1] = { ...open, end: event.at };
-      if (state.phase === "failed" && state.failure !== undefined)
-        failures.push({ at: event.at, code: state.failure.code });
-      if (state.stop?.reason === "crashed")
-        crashes.push({ at: event.at, exitCode: state.stop.exitCode ?? null });
+export const sessionStats: (events: readonly SessionEvent[]) => SessionStats | null =
+  function sessionStats(events) {
+    let state: State = initial;
+    const runs: Run[] = [];
+    const turns: number[] = [];
+    const failures: { at: number; code: string }[] = [];
+    const crashes: { at: number; exitCode: number | null }[] = [];
+    const boots: { at: number; ms: number }[] = [];
+    const violations: number[] = [];
+    const timeouts: { at: number; op: string }[] = [];
+    for (const event of events) {
+      const before = state;
+      state = fold(before, event);
+      const gen = state.gen;
+      if (state.startSeq === event.seq && before.startSeq !== event.seq && gen !== undefined)
+        runs.push({ gen, size: state.size, start: event.at, end: null });
+      const open = runs.at(-1);
+      if (live(before) && !live(state) && open !== undefined && open.end === null) {
+        runs[runs.length - 1] = { ...open, end: event.at };
+        if (state.phase === "failed" && state.failure !== undefined)
+          failures.push({ at: event.at, code: state.failure.code });
+        if (state.stop?.reason === "crashed")
+          crashes.push({ at: event.at, exitCode: state.stop.exitCode ?? null });
+      }
+      for (let turn = before.turns.length; turn < state.turns.length; turn++) turns.push(event.at);
+      if (
+        event.kind === "workspace.ready" &&
+        state.readySeq === event.seq &&
+        event.ms !== undefined
+      )
+        boots.push({ at: event.at, ms: event.ms });
+      if (event.kind === "invariant.violated") violations.push(event.at);
+      if (
+        event.kind === "timeout" &&
+        !routine.has(event.op) &&
+        before.pending.some((item) => item.op === event.op && item.due <= event.at)
+      )
+        timeouts.push({ at: event.at, op: timeoutKind(event.op) });
     }
-    for (let turn = before.turns.length; turn < state.turns.length; turn++) turns.push(event.at);
-    if (event.kind === "workspace.ready" && state.readySeq === event.seq && event.ms !== undefined)
-      boots.push({ at: event.at, ms: event.ms });
-    if (event.kind === "invariant.violated") violations.push(event.at);
-    // Only a timeout the fold acted on: one whose deadline was pending and due.
-    if (
-      event.kind === "timeout" &&
-      !routine.has(event.op) &&
-      before.pending.some((item) => item.op === event.op && item.due <= event.at)
-    )
-      timeouts.push({ at: event.at, op: timeoutKind(event.op) });
-  }
-  const created = state.created;
-  if (created === undefined) return null;
-  return {
-    repo: created.repo,
-    agentKind: created.agentKind,
-    live: runs.at(-1)?.end === null,
-    runs,
-    turns,
-    failures,
-    crashes,
-    boots,
-    violations,
-    timeouts,
+    const created = state.created;
+    if (created === undefined) return null;
+    return {
+      repo: created.repo,
+      agentKind: created.agentKind,
+      live: runs.at(-1)?.end === null,
+      runs,
+      turns,
+      failures,
+      crashes,
+      boots,
+      violations,
+      timeouts,
+    };
   };
-}
 
 export const StatsWindow = Schema.Literals(["7d", "30d", "all"]);
 export type StatsWindow = typeof StatsWindow.Type;
@@ -96,7 +92,6 @@ const windowMs: Record<StatsWindow, number> = {
 
 const Count = Schema.Struct({ key: Schema.String, count: Schema.Number });
 const AgentShare = Schema.Struct({ sessions: Schema.Number, runMs: Schema.Number });
-// Estimated USD: hours × the size's `hourlyRate`, an upper bound.
 const SizeShare = Schema.Struct({ size: Size, runMs: Schema.Number, cost: Schema.Number });
 export const RepoStats = Schema.Struct({
   repo: Schema.String,
@@ -113,7 +108,6 @@ export const RepoStats = Schema.Struct({
   timeouts: Schema.Array(Count),
   running: Schema.Number,
   agents: Schema.Struct({ codex: AgentShare, claude: AgentShare }),
-  // The sizes that ran in the window, in `Size` order; their `runMs` sum to the repo's.
   sizes: Schema.Array(SizeShare),
   cost: Schema.Number,
 });
@@ -126,14 +120,14 @@ export const Stats = Schema.Struct({
 });
 export type Stats = typeof Stats.Type;
 
-const counted = (keys: readonly string[]): { key: string; count: number }[] => {
+const counted: (keys: readonly string[]) => { key: string; count: number }[] = (keys) => {
   const counts = new Map<string, number>();
   for (const key of keys) counts.set(key, (counts.get(key) ?? 0) + 1);
   return [...counts]
     .map(([key, count]) => ({ key, count }))
     .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
 };
-const median = (values: readonly number[]): number | null => {
+const median: (values: readonly number[]) => number | null = (values) => {
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
   const high = sorted[middle];
@@ -142,13 +136,12 @@ const median = (values: readonly number[]): number | null => {
   return sorted.length % 2 === 1 || low === undefined ? high : (low + high) / 2;
 };
 
-// The sessions with a run in [from, now], summed; hours are clipped to that span.
-function summarize(
+const summarize: (
   repo: string,
   sessions: readonly SessionStats[],
   from: number,
   now: number,
-): RepoStats {
+) => RepoStats = function summarize(repo, sessions, from, now) {
   const inWindow = (at: number) => at >= from && at <= now;
   const clipped = (run: Run) =>
     Math.max(0, Math.min(run.end ?? now, now) - Math.max(run.start, from));
@@ -193,14 +186,13 @@ function summarize(
     sizes,
     cost: sizes.reduce((sum, share) => sum + share.cost, 0),
   };
-}
+};
 
-// Per repository and in total over the window ending at `now`; busiest repositories first.
-export function repoStats(
+export const repoStats: (
   sessions: readonly SessionStats[],
   window: StatsWindow,
   now: number,
-): Stats {
+) => Stats = function repoStats(sessions, window, now) {
   const from = now - windowMs[window];
   const byRepo = new Map<string, SessionStats[]>();
   for (const session of sessions)
@@ -210,4 +202,4 @@ export function repoStats(
     .filter((repo) => repo.sessions > 0)
     .sort((a, b) => b.runMs - a.runMs || a.repo.localeCompare(b.repo));
   return { window, now, repos, total: summarize("All repositories", sessions, from, now) };
-}
+};

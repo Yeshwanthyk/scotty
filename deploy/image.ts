@@ -47,13 +47,10 @@ const accept =
   "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json";
 const error = (step: string, status = 0) => new CopyError({ step, status });
 
-// An image whose supervisor is not the one this release speaks to.
 export class StaleImage extends Schema.TaggedError<StaleImage>()("StaleImage", {
   message: Schema.String,
 }) {}
 
-// Copies the image into the account's registry, refusing it unless its scotty.supervisor label
-// is `supervisor`; nothing is pushed before that check.
 export const copyImage = (raw: {
   source: string;
   account: string;

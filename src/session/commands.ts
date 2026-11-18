@@ -14,7 +14,7 @@ type Resend =
     }
   | { readonly req: string; readonly kind: "interrupt"; readonly turn: string };
 
-const toResend = (request: Request): Resend =>
+const toResend: (request: Request) => Resend = (request) =>
   request.kind === "prompt"
     ? {
         req: request.req,
@@ -26,7 +26,6 @@ const toResend = (request: Request): Resend =>
     : { req: request.req, kind: "interrupt", turn: request.turn };
 
 export type Command =
-  // fresh replaces a container left from an older generation.
   | { readonly kind: "container.start"; readonly gen: number; readonly fresh?: true }
   | { readonly kind: "dial"; readonly gen: number; readonly after: number }
   | {
@@ -58,16 +57,17 @@ export type Command =
   | { readonly kind: "idle"; readonly gen: number; readonly seq: number }
   | { readonly kind: "save"; readonly gen: number; readonly turn: string; readonly ack: number };
 
-const ackFor = (
+const ackFor: (
   state: State,
   output: { readonly gen: number; readonly n: number },
-): Command | undefined =>
+) => Command | undefined = (state, output) =>
   ackRecorded(state, output) ? { kind: "ack", gen: output.gen, ack: output.n } : undefined;
 
-export function command(state: State, event: SessionEvent): Command | undefined {
+export const command: (state: State, event: SessionEvent) => Command | undefined = function command(
+  state,
+  event,
+) {
   if (state.lastSeq !== event.seq) return undefined;
-  // Ending a session, stopped or failed, destroys its container: a start that failed may still
-  // have placed one.
   if (state.phase === "stopped" || state.phase === "failed")
     return state.stopSeq === event.seq ? { kind: "destroy" } : undefined;
   switch (event.kind) {
@@ -193,4 +193,4 @@ export function command(state: State, event: SessionEvent): Command | undefined 
     default:
       return undefined;
   }
-}
+};

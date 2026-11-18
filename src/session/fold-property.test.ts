@@ -13,7 +13,7 @@ import {
   kinds,
   ready,
   start,
-} from "./fold-fixtures.js";
+} from "./fold.fixture.js";
 
 const supervisor = new Set([
   "workspace.prepared",
@@ -25,7 +25,7 @@ const supervisor = new Set([
   "sup.error",
 ]);
 const hits: Record<string, number> = {};
-const bump = (name: string): void => {
+const bump: (name: string) => void = (name) => {
   hits[name] = (hits[name] ?? 0) + 1;
 };
 let shortest = Infinity;
@@ -45,9 +45,7 @@ it.prop(
       let state: State = initial;
       let at = 4_000;
       let priorDial: number | undefined;
-      // Generations whose start was refused by the cap; none of their output may land.
       const capped = new Set<number>();
-      // The first `created` event's size, then the last applied resume's that named one.
       let size: string = "standard-1";
       for (const event of prefix) {
         state = fold(state, event);
@@ -59,7 +57,6 @@ it.prop(
         const gen = step.gen;
         const n = Math.max(1, before.lastN + step.dn);
         let kind: string = kinds[step.index] ?? "alarm";
-        // Keep terminal events rare so later outputs and reconnects remain reachable.
         if (kind === "failed" && (step.req !== "p" || step.dn !== -1)) kind = "agent.event";
         const chosen =
           before.requests.find((r) =>
@@ -108,7 +105,6 @@ it.prop(
           (chosen.startsWith("initial:") || chosen.startsWith("stalled:"))
         )
           fields.req = "client-p";
-        // The first prompt keeps its `initial:<gen>` name, which the generated requests use.
         if (kind === "created") delete fields.req;
         if ((kind === "created" || kind === "resume.requested") && step.size !== "none")
           fields.size = step.size;
@@ -141,7 +137,6 @@ it.prop(
           bump(
             `resume ${applied ? "applied" : "ignored"} ${event.size === undefined ? "without" : "with"} size`,
           );
-          // The API refuses exactly the sized resumes the fold would ignore and that change size.
           expect(resizeConflict(before, event.size)).toBe(
             applied || event.size === undefined || event.size === before.size
               ? undefined
@@ -151,9 +146,7 @@ it.prop(
           );
         }
         expect(state.size).toBe(size);
-        // A running container never changes size.
         if (before.created !== undefined && live(before)) expect(state.size).toBe(before.size);
-        // Output numbering restarts with each resumed generation.
         if (state.gen === before.gen) expect(state.lastN).toBeGreaterThanOrEqual(before.lastN);
         if (!live(before) && !live(state)) expect(issued).toBeUndefined();
         if (cap) {
@@ -217,7 +210,6 @@ it.prop(
           expect(
             issued?.kind === "save" ? { kind: "ack", gen: issued.gen, ack: issued.ack } : issued,
           ).toEqual({ kind: "ack", gen: state.gen, ack: state.lastN });
-        // A save carries the turn-end ack so one command both acks and saves.
         if (issued?.kind === "save") {
           expect(event.kind).toBe("turn.ended");
           expect(issued.ack).toBe(state.lastN);
@@ -238,7 +230,6 @@ it.prop(
         for (const request of before.requests) {
           const status = state.requests.find((r) => r.req === request.req)?.status;
           if (request.status !== "pending") expect(status).toBe(request.status);
-          // A request timeout stays pending; a req-less startup error ends the session.
           if (event.kind === "sup.error" && event.req !== undefined && event.code === "timeout")
             expect(status).toBe(request.status);
         }

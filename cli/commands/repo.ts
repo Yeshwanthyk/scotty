@@ -18,7 +18,6 @@ const list = Command.make("ls", {}, () =>
   }),
 );
 
-// --default goes back to standard-1 for new sessions; existing sessions keep their size.
 const set = Command.make(
   "set",
   {

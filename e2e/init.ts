@@ -8,13 +8,6 @@ import { root } from "../cli/commands/deploy.js";
 import { cloudflareLayer } from "../deploy/cloudflare.js";
 import { leftovers } from "../deploy/deployer.js";
 
-// Runs `scotty init` as the owner does, in a terminal, on a stage of its own: stops it with Ctrl-C
-// mid-deploy, runs it again until the address is live, checks that a second stage may not take
-// the address over, then tears the stage down. Its domain must have no other stage on it.
-//
-//   npm run e2e -- init --stage <name>
-
-// Bun's pty; the repository has no Bun types.
 declare const Bun: {
   spawn(
     command: ReadonlyArray<string>,
@@ -59,8 +52,6 @@ const config: Config = {
 const folder = mkdtempSync(join(tmpdir(), "scotty-init-"));
 const configFile = join(folder, "config.json");
 writeFileSync(configFile, JSON.stringify(config));
-// Access sign-in opens a browser for a person, so cloudflared here always declines; init then
-// stops right after the address is live.
 writeFileSync(join(folder, "cloudflared"), "#!/bin/sh\nexit 1\n");
 chmodSync(join(folder, "cloudflared"), 0o755);
 const childEnv = (file: string) => ({
@@ -74,7 +65,6 @@ const check = (ok: boolean, message: string, screen: string) => {
   if (!ok) throw new Error(`${message}\n--- screen ---\n${screen.slice(-3000)}`);
 };
 
-// One init in a terminal: answers each prompt as it appears and reports what the screen showed.
 const run = async (
   file: string,
   answers: ReadonlyArray<readonly [prompt: string, keys: string]>,
@@ -160,7 +150,6 @@ try {
   check(other.code === 2, `A second stage ended with ${other.code}, not 2`, other.screen);
   check(other.screen.includes("is already in use"), "A second stage was not refused", other.screen);
 } finally {
-  // Failures here are reported, not thrown, so they cannot hide why the test failed.
   if (deployed) {
     if ((await teardown()) !== 0) {
       process.exitCode = 1;
@@ -168,7 +157,6 @@ try {
         `✗ Teardown of scotty-${stage} failed; run it again with SCOTTY_CONFIG=${configFile}`,
       );
     }
-    // A deploy stopped by Ctrl-C must not go on creating things after the teardown.
     const left = await Effect.runPromise(
       leftovers({ ...config, stage }).pipe(
         Effect.provide(cloudflareLayer(Redacted.make(process.env.CLOUDFLARE_API_TOKEN ?? ""))),

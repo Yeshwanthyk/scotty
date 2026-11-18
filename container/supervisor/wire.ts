@@ -18,7 +18,7 @@ type Wire = {
   readonly acknowledged: number;
   readonly outbox: readonly FromSupervisorMessage[];
 };
-export const initialWire = (boot: string): Wire => ({
+export const initialWire: (boot: string) => Wire = (boot) => ({
   gen: undefined,
   boot,
   next: 1,
@@ -26,12 +26,13 @@ export const initialWire = (boot: string): Wire => ({
   outbox: [],
 });
 
-// Only this pure transition allocates n. A bad output is a typed failure,
-// not a thrown defect that could kill the socket consumer.
-export function emit(
+export const emit: (
   state: Wire & { readonly gen: number },
   output: Output,
-): Result.Result<{ wire: Wire; message: FromSupervisorMessage }, WireError> {
+) => Result.Result<{ wire: Wire; message: FromSupervisorMessage }, WireError> = function emit(
+  state,
+  output,
+) {
   const decoded = Schema.decodeUnknownResult(FromSupervisor)({
     ...output,
     gen: state.gen,
@@ -44,23 +45,26 @@ export function emit(
     wire: { ...state, next: state.next + 1, outbox: [...state.outbox, message] },
     message,
   });
-}
-export function acknowledge(state: Wire, after: number): Wire {
+};
+export const acknowledge: (state: Wire, after: number) => Wire = function acknowledge(
+  state,
+  after,
+) {
   const acknowledged = Math.max(state.acknowledged, Math.min(after, state.next - 1));
   return { ...state, acknowledged, outbox: state.outbox.filter((entry) => entry.n > acknowledged) };
-}
-export function dial(
+};
+export const dial: (
   state: Wire,
   gen: number,
   after: number,
   startup?: typeof StartupTiming.Type,
-):
+) =>
   | { readonly conflict: true }
   | {
       readonly conflict: false;
       readonly wire: Wire;
       readonly messages: readonly FromSupervisorMessage[];
-    } {
+    } = function dial(state, gen, after, startup?) {
   if (state.gen !== undefined && state.gen !== gen) return { conflict: true };
   const greeting: FromSupervisorMessage = {
     type: "hello",
@@ -78,4 +82,4 @@ export function dial(
     wire: acknowledge(initialized, after),
     messages: [greeting, ...replay],
   };
-}
+};

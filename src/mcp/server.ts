@@ -12,8 +12,6 @@ import { apiHandler } from "../http/api.js";
 import { Prompt, Repo } from "../http/start.js";
 import { version } from "../version.js";
 
-// MCP over Streamable HTTP, stateless: each POST is one JSON-RPC message answered with JSON, so any
-// Worker isolate can serve it. Access Managed OAuth signs the client in before a request gets here.
 const versions = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const Message = Schema.Struct({
   jsonrpc: Schema.Literal("2.0"),
@@ -24,7 +22,6 @@ const Message = Schema.Struct({
 const Initialize = Schema.Struct({ protocolVersion: Schema.String });
 const Call = Schema.Struct({ name: Schema.String, arguments: Schema.optionalKey(Schema.Unknown) });
 
-// The parts of the API's replies a model needs; Schema drops the rest.
 const Session = Schema.Struct({
   identity: Schema.Struct({ id: Schema.String }),
   authority: Schema.Union([
@@ -63,12 +60,11 @@ const brief = (session: typeof Session.Type) => ({
 const Id = Schema.Struct({ id: Schema.String });
 
 type ToolResult = { content: [{ type: "text"; text: string }]; isError?: true };
-const text = (value: string, isError?: true): ToolResult => ({
+const text: (value: string, isError?: true) => ToolResult = (value, isError?) => ({
   content: [{ type: "text", text: value }],
   ...(isError === undefined ? {} : { isError }),
 });
 
-// The API's in-process reply body could not be read.
 class ReplyUnreadable extends Schema.TaggedError<ReplyUnreadable>()("ReplyUnreadable", {}) {}
 
 const rpc = (id: string | number, body: { result: unknown } | { error: unknown }) =>
@@ -81,7 +77,6 @@ export function mcpHandler(
   bucket: Cloudflare.R2.ReadWriteBucketClient,
   hatchBase: string,
 ) {
-  // One API call in-process, so the tools keep the API's checks and errors.
   const api = (method: string, path: string, body?: unknown) =>
     Effect.gen(function* () {
       const web = new Request(`https://scotty.internal${path}`, {
@@ -184,7 +179,6 @@ export function mcpHandler(
         size: Schema.optionalKey(Size).annotate({
           description: `The container size; default: the repository's default, else ${defaultSize} (${sizeShape(defaultSize)}). Bigger than standard-4 needs a runner.`,
         }),
-        // Scotty's own e2e tests run the agent's scripted stand-in.
         scripted: Schema.optionalKey(Schema.Literal(true)).annotate({
           description: "Only for Scotty's own tests: run a scripted stand-in, not the agent.",
         }),
@@ -280,7 +274,6 @@ export function mcpHandler(
         { status: 400 },
       );
     const { id, method, params } = message.success;
-    // Notifications and responses need no answer.
     if (id === undefined || method === undefined) return HttpServerResponse.empty({ status: 202 });
     if (method === "initialize") {
       const asked = Schema.decodeUnknownResult(Initialize)(params);

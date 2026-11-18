@@ -43,7 +43,7 @@ export class CodexRunner implements Runner {
       return new CodexRunner(agent, cwd, yield* Queue.unbounded<AgentOutput>());
     });
   }
-  private receive(event: AgentOutput): Effect.Effect<void> {
+  private receive(event: AgentOutput) {
     return Effect.gen({ self: this }, function* () {
       yield* Queue.offer(this.output, event);
       if (event.type !== "agent") return;
@@ -81,16 +81,9 @@ export class CodexRunner implements Runner {
           });
         }
       }
-    });
+    }) satisfies Effect.Effect<void>;
   }
-  start(
-    env: Record<string, string>,
-    threadId?: string,
-  ): Effect.Effect<
-    AgentReady,
-    AgentError,
-    Scope.Scope | FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
-  > {
+  start(env: Record<string, string>, threadId?: string) {
     return Effect.gen({ self: this }, function* () {
       const child = yield* launchCodex(this.agent, this.cwd, env);
       const rpc = yield* CodexRpc.make(child);
@@ -105,7 +98,6 @@ export class CodexRunner implements Runner {
         capabilities: { experimentalApi: false },
       });
       yield* rpc.notify("initialized");
-      // thread/resume reads the restored rollout under CODEX_HOME for this thread id.
       const method = threadId === undefined ? "thread/start" : "thread/resume";
       const result = yield* rpc.request(method, {
         ...(threadId === undefined ? {} : { threadId }),
@@ -122,14 +114,13 @@ export class CodexRunner implements Runner {
       );
       this.thread = thread.thread.id;
       return { kind: "codex", session: thread.thread.id };
-    });
+    }) satisfies Effect.Effect<
+      AgentReady,
+      AgentError,
+      Scope.Scope | FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
+    >;
   }
-  send(
-    req: string,
-    turn: string,
-    text: string,
-    images: readonly PromptImage[] = [],
-  ): Effect.Effect<Delivered, AgentError> {
+  send(req: string, turn: string, text: string, images: readonly PromptImage[] = []) {
     return Effect.gen({ self: this }, function* () {
       const rpc = this.rpc;
       const threadId = this.thread;
@@ -177,9 +168,9 @@ export class CodexRunner implements Runner {
         }
       }
       return { req };
-    });
+    }) satisfies Effect.Effect<Delivered, AgentError>;
   }
-  interrupt(_req: string): Effect.Effect<void, AgentError> {
+  interrupt(_req: string) {
     return Effect.gen({ self: this }, function* () {
       if (this.rpc === undefined || this.thread === undefined || this.activeCodex === undefined)
         return yield* new AgentError({ code: "no_turn", message: "no active turn" });
@@ -187,6 +178,6 @@ export class CodexRunner implements Runner {
         threadId: this.thread,
         turnId: this.activeCodex,
       });
-    });
+    }) satisfies Effect.Effect<void, AgentError>;
   }
 }

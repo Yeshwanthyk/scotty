@@ -4,10 +4,8 @@ import * as claude from "./agents/claude.js";
 import * as codex from "./agents/codex.js";
 import type { TurnItems } from "./items.js";
 
-// Each agent reads its own events; nothing else here knows their format.
 const agents = { codex, claude };
 
-// Codex ends a turn as completed, interrupted or failed; the view has no pending "ended" state.
 const turnState = (ended: string | undefined) =>
   ended === undefined
     ? ("streaming" as const)
@@ -17,11 +15,8 @@ const turnState = (ended: string | undefined) =>
         ? ("failed" as const)
         : ("completed" as const);
 
-// A session's first prompt as shown to searches: long pastes are cut.
 const promptPreview = (prompt: string) => prompt.trim().slice(0, 300);
 
-// How the turn a prompt went into ended: the first prompt's when `req` is absent. A prompt the
-// session refused counts as failed; a turn cut short by a stop, as stopped.
 export function turnOutcome(state: State, req?: string) {
   const request = state.requests.find(
     (item) => item.kind === "prompt" && (req === undefined || item.req === req),
@@ -58,8 +53,6 @@ export function sessionView(id: string, state: State) {
       createdAt: new Date(created?.at ?? 0).toISOString(),
       activeAt: new Date(state.activeAt || (created?.at ?? 0)).toISOString(),
     },
-    // Working while the current turn has a live prompt; `turns` lets a client notice unseen
-    // answers.
     progress: {
       working:
         state.phase === "running" &&
@@ -70,7 +63,6 @@ export function sessionView(id: string, state: State) {
             (request.status === "pending" || request.status === "delivered"),
         ),
       turns: state.turns.length,
-      // When an idle running session sleeps, unless someone uses it first.
       sleepsAt: iso(
         state.phase === "running"
           ? state.pending.find((item) => item.op === "idle")?.due
@@ -110,16 +102,17 @@ export function sessionView(id: string, state: State) {
 
 export type SessionView = ReturnType<typeof sessionView>;
 
-export function acceptedAgentEvents(events: readonly SessionEvent[]): SessionEvent[] {
-  let replay: State = initial;
-  const accepted: SessionEvent[] = [];
-  for (const event of events) {
-    const next = fold(replay, event);
-    if (event.kind === "agent.event" && next.lastN > replay.lastN) accepted.push(event);
-    replay = next;
-  }
-  return accepted;
-}
+export const acceptedAgentEvents: (events: readonly SessionEvent[]) => SessionEvent[] =
+  function acceptedAgentEvents(events) {
+    let replay: State = initial;
+    const accepted: SessionEvent[] = [];
+    for (const event of events) {
+      const next = fold(replay, event);
+      if (event.kind === "agent.event" && next.lastN > replay.lastN) accepted.push(event);
+      replay = next;
+    }
+    return accepted;
+  };
 
 export function conversationView(state: State, events: readonly SessionEvent[]) {
   const answers = new Map<string, string>();

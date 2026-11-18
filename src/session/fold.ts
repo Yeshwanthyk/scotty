@@ -10,45 +10,39 @@ export { deadline, deadlines } from "./deadlines.js";
 export { invariants } from "./invariants.js";
 export type { Violation } from "./invariants.js";
 
-// A stopped session, or one whose failure a fresh container may get past, can resume.
-const resumable = (state: State): boolean =>
+const resumable: (state: State) => boolean = (state) =>
   state.phase === "stopped" || (state.phase === "failed" && state.failure?.retryable === true);
 
-// A running container never changes size, so a resume naming another size needs a resumable
-// session; the same size, or none, is an ordinary resume. A session that failed for good can
-// never resume, so stopping it would not help.
-export const resizeConflict = (
+export const resizeConflict: (
   state: State,
   size: typeof Size.Type | undefined,
-): "running" | "failed" | undefined =>
+) => "running" | "failed" | undefined = (state, size) =>
   size === undefined || size === state.size || resumable(state)
     ? undefined
     : state.phase === "failed"
       ? "failed"
       : "running";
 
-const settle = (
+const settle: (
   requests: readonly Request[],
   req: string,
   status: Request["status"],
-): readonly Request[] =>
+) => readonly Request[] = (requests, req, status) =>
   requests.map((item) =>
     item.req === req && item.status === "pending" ? { ...item, status } : item,
   );
-// A turn is open while a live prompt belongs to it and it has not ended.
-const turnOpen = (state: State): boolean =>
+const turnOpen: (state: State) => boolean = (state) =>
   state.requests.some(
     (item) =>
       item.kind === "prompt" &&
       item.turn === state.currentTurn &&
       (item.status === "pending" || item.status === "delivered"),
   );
-// Ending a session interrupts its open turn, so the next prompt starts a new one.
-const endAll = (
-  state: State,
-  phase: "stopped" | "failed",
-  stop: State["stop"] = undefined,
-): State => ({
+const endAll: (state: State, phase: "stopped" | "failed", stop?: State["stop"]) => State = (
+  state,
+  phase,
+  stop?,
+) => ({
   ...state,
   phase,
   stop: phase === "stopped" ? stop : undefined,
@@ -66,13 +60,10 @@ const endAll = (
     : {}),
 });
 
-// The turn's own interrupt, sent when it stalled.
-const stallReq = (turn: string): string => `stalled:${turn}`;
-const stalled = (state: State, turn: string): boolean =>
+const stallReq: (turn: string) => string = (turn) => `stalled:${turn}`;
+const stalled: (state: State, turn: string) => boolean = (state, turn) =>
   state.requests.some((item) => item.req === stallReq(turn));
-// A save settles the last turn; after a stall, the session then stops unless the owner has
-// started another turn.
-const saved = (state: State, next: State): State => {
+const saved: (state: State, next: State) => State = (state, next) => {
   const turn = state.turns.at(-1)?.turn;
   const settled = { ...next, pending: remove(state.pending, "save") };
   return turn !== undefined && live(state) && stalled(state, turn) && !turnOpen(next)
@@ -80,8 +71,7 @@ const saved = (state: State, next: State): State => {
     : settled;
 };
 
-// A new generation on a fresh container; pending requests wait for its workspace.
-const resume = (state: State, at: number): State => ({
+const resume: (state: State, at: number) => State = (state, at) => ({
   ...state,
   phase: "provisioning",
   failure: undefined,
@@ -99,18 +89,23 @@ const resume = (state: State, at: number): State => ({
   pending: [{ op: "container", due: at + deadlines.container }],
 });
 
-const accepts = (state: State, event: { readonly gen: number; readonly n: number }): boolean =>
-  state.gen === event.gen && state.connected && live(state) && event.n > state.lastN;
-const advance = (state: State, n: number, forceAck = false): State => ({
-  ...state,
-  lastN: n,
-  lastAckN: shouldAck(state, n, forceAck) ? n : state.lastAckN,
-  lastAckSeq: shouldAck(state, n, forceAck) ? state.lastSeq : state.lastAckSeq,
-});
+const accepts: (state: State, event: { readonly gen: number; readonly n: number }) => boolean = (
+  state,
+  event,
+) => state.gen === event.gen && state.connected && live(state) && event.n > state.lastN;
+const advance = (state: State, n: number, forceAck = false) =>
+  ({
+    ...state,
+    lastN: n,
+    lastAckN: shouldAck(state, n, forceAck) ? n : state.lastAckN,
+    lastAckSeq: shouldAck(state, n, forceAck) ? state.lastSeq : state.lastAckSeq,
+  }) satisfies State;
 
-// A running session with no open turn and no save in flight sleeps once its idle window passes.
-// An open turn stalls once the agent is silent for the stalled window; its output pushes that back.
-const pace = (before: State, after: State, event: SessionEvent): State => {
+const pace: (before: State, after: State, event: SessionEvent) => State = (
+  before,
+  after,
+  event,
+) => {
   if (after === before) return after;
   const ready = live(after) && after.ready;
   const idle = ready && !turnOpen(after) && !has(after.pending, "save");
@@ -122,7 +117,6 @@ const pace = (before: State, after: State, event: SessionEvent): State => {
     : remove(after.pending, "idle");
   return {
     ...after,
-    // Anything that ends idleness overtakes an idle check in flight.
     idleSeq: idle ? after.idleSeq : 0,
     pending: !(ready && turnOpen(after))
       ? remove(paced, "stalled")
@@ -132,11 +126,11 @@ const pace = (before: State, after: State, event: SessionEvent): State => {
   };
 };
 
-export function fold(state: State, event: SessionEvent): State {
+export const fold: (state: State, event: SessionEvent) => State = function fold(state, event) {
   return pace(state, step(state, event), event);
-}
+};
 
-function step(state: State, event: SessionEvent): State {
+const step: (state: State, event: SessionEvent) => State = function step(state, event) {
   if (event.seq <= state.lastSeq) return state;
   const next = { ...state, lastSeq: event.seq };
   switch (event.kind) {
@@ -158,8 +152,6 @@ function step(state: State, event: SessionEvent): State {
       };
     case "sup.hello":
       if (event.gen !== state.gen || !live(state)) return next;
-      // A different supervisor for this generation means the container was replaced under
-      // the session, as a deploy does; its work since the last save is gone.
       if (state.boot !== undefined && state.boot !== event.boot)
         return endAll(next, "stopped", { reason: "deploy" });
       if (state.connected || (!has(state.pending, "container") && !has(state.pending, "dial")))
@@ -225,7 +217,6 @@ function step(state: State, event: SessionEvent): State {
             seq: event.seq,
           },
         ],
-        // A prompt that arrived while the workspace was being made waits behind the first.
         pending: state.requests.reduce(
           (pending, item) =>
             item.status === "pending"
@@ -237,12 +228,9 @@ function step(state: State, event: SessionEvent): State {
     }
     case "prompt.requested":
     case "interrupt.requested": {
-      // A request id is used once; the first prompt's is taken before its request exists.
       if (state.requests.some((item) => item.req === event.req) || state.created?.req === event.req)
         return next;
       const kind = event.kind === "prompt.requested" ? "prompt" : "interrupt";
-      // A prompt to a stopped session resumes it; requests wait for a resumed workspace, or for
-      // the first one's, when the session has been created but has no workspace yet.
       const valid =
         event.turn === state.currentTurn &&
         (state.phase === "running" ||
@@ -295,7 +283,6 @@ function step(state: State, event: SessionEvent): State {
       return accepts(state, event) ? advance(next, event.n) : next;
     case "sup.error":
       if (!accepts(state, event)) return next;
-      // A lone agent exit (crash or OOM) leaves the session resumable, not broken.
       if (event.req === undefined && event.code === "exit")
         return endAll(
           {
@@ -306,7 +293,6 @@ function step(state: State, event: SessionEvent): State {
           "stopped",
           { reason: "agent" },
         );
-      // The supervisor reports a failed start once; waiting out the workspace deadline adds nothing.
       if (event.req === undefined && !state.ready)
         return endAll(
           {
@@ -361,7 +347,6 @@ function step(state: State, event: SessionEvent): State {
       };
     case "save.done":
     case "save.failed":
-      // Only the latest turn's save owns the deadline; an older save's result changes nothing.
       return state.turns.at(-1)?.turn === event.turn ? saved(state, next) : next;
     case "socket.closed":
       if (event.gen !== state.gen || !live(state) || !state.connected) return next;
@@ -395,7 +380,6 @@ function step(state: State, event: SessionEvent): State {
       };
     case "timeout":
       if (!state.pending.some((item) => item.op === event.op && item.due <= event.at)) return next;
-      // The container is gone or unreachable; its saved work can still resume.
       if (event.op === "dial") return endAll(next, "stopped", { reason: "gone" });
       if (event.op === "container" || event.op === "workspace")
         return endAll(
@@ -405,15 +389,10 @@ function step(state: State, event: SessionEvent): State {
           },
           "failed",
         );
-      // The Session DO re-watches the container, or records it gone.
       if (event.op === "watch") return { ...next, pending: remove(state.pending, "watch") };
-      // A lost save leaves the previous save in place; the session carries on.
       if (event.op === "save") return saved(state, next);
-      // The Session DO stops the container, unless the owner used it within the window; the
-      // idle deadline starts again either way.
       if (event.op === "idle")
         return { ...next, idleSeq: event.seq, pending: remove(state.pending, "idle") };
-      // A stalled turn is interrupted once, then stopped if it still hasn't ended.
       if (event.op === "stalled") {
         const req = stallReq(state.currentTurn);
         if (stalled(state, state.currentTurn))
@@ -451,12 +430,10 @@ function step(state: State, event: SessionEvent): State {
         : next;
     case "container.stopped":
       if (event.gen !== state.gen) return next;
-      // An owner or automation stop of a failed session destroys its container.
       if (!live(state))
         return state.phase === "failed" && (event.reason === "user" || event.reason === "ended")
           ? { ...next, stopSeq: event.seq }
           : next;
-      // An idle stop decided before a prompt or use landed does not apply.
       return event.reason !== "idle" ||
         (has(state.pending, "idle") &&
           (event.idleSeq === undefined || event.idleSeq === state.idleSeq))
@@ -488,7 +465,6 @@ function step(state: State, event: SessionEvent): State {
           }
         : next;
     case "failed":
-      // A failure reported for an ended session changes nothing.
       if (!live(state)) return next;
       return endAll(
         {
@@ -509,14 +485,9 @@ function step(state: State, event: SessionEvent): State {
     case "invariant.violated":
       return next;
   }
-}
+};
 
-// What a start does to this session: make it, prompt it, or answer from what it already holds.
-// A request id seen before is answered as it was the first time; one reused for another
-// repository, agent or prompt is a conflict. Only a creating start names a size (a steer or wake
-// joins the session at its size), and a retried create naming a size it was not created at is a
-// conflict too; a resize since then does not change that.
-export function startStep(
+export const startStep: (
   state: State,
   input: {
     readonly req: string;
@@ -526,7 +497,10 @@ export function startStep(
     readonly prompt: string;
     readonly images?: readonly PromptImage[];
   },
-): "create" | "prompt" | "duplicate" | "unavailable" | "conflict" {
+) => "create" | "prompt" | "duplicate" | "unavailable" | "conflict" = function startStep(
+  state,
+  input,
+) {
   const created = state.created;
   if (created === undefined) return "create";
   if (
@@ -547,8 +521,7 @@ export function startStep(
     !sameImages(seen.images, input.images)
   )
     return "conflict";
-  // Refused, failed or of unknown fate: the session never said it took the prompt.
   return seen.status === "pending" || seen.status === "delivered" || seen.status === "ended"
     ? "duplicate"
     : "unavailable";
-}
+};

@@ -4,8 +4,6 @@ import type { Config } from "../../runner.js";
 import { AgentError } from "../../runner.js";
 import { processEnv } from "../../runtime.js";
 
-// JSON basic-string escapes also satisfy TOML except for DEL (U+007F).
-// The agent schema rejects lone surrogates in every string written to this config.
 export const toml = (value: string) => JSON.stringify(value).replace(/\u007f/g, "\\u007f");
 export const codexHome = () => processEnv("SCOTTY_CODEX_HOME") || "/home/scotty/.codex";
 
@@ -25,7 +23,6 @@ const writeConfig = (config: Extract<Config, { kind: "codex"; token: string }>, 
           (config.mcp ?? [])
             .map((server) => `\n[mcp_servers.${toml(server.name)}]\nurl = ${toml(server.url)}\n`)
             .join("") +
-          // Owner-switched-off skills are installed (other skills link into them) but hidden.
           (config.skillsOff ?? [])
             .map((name) => `\n[[skills.config]]\nname = ${toml(name)}\nenabled = false\n`)
             .join(""),

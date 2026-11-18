@@ -65,7 +65,6 @@ export const Created = Schema.Struct({
   provider: Schema.String,
   status: Schema.String,
   url: Schema.String,
-  // A create with a key already used steers that session instead of making one.
   steered: Schema.optional(Schema.Boolean),
 });
 export { Connection, ConnectionCreated };
@@ -98,7 +97,6 @@ export const Run = Schema.Struct({
   delivery: Schema.NullOr(Schema.String),
   key: Schema.NullOr(Schema.String),
 });
-// How the turn a run sent went, read from its session; null when it reached none.
 export const Runs = Schema.Struct({
   runs: Schema.Array(
     Schema.Struct({
@@ -193,7 +191,6 @@ export const Conversation = Schema.Struct({
     }),
   ),
 });
-// Events keep every field so agents can read answers and errors from the raw log.
 export const Log = Schema.Array(
   Schema.StructWithRest(
     Schema.Struct({ seq: Schema.Number, at: Schema.Number, kind: Schema.String }),
@@ -329,12 +326,11 @@ export function client(settings: { readonly url: string; readonly token: string 
           ),
       });
       const json = Effect.tryPromise({
-        try: (): Promise<unknown> => response.json(),
+        try: () => response.json() satisfies Promise<unknown>,
         catch: () =>
           failure("invalid_reply", `HTTP ${response.status} was not JSON`, `Check ${settings.url}`),
       });
       if (!response.ok) {
-        // An error reply that is not JSON still reports its status.
         const body = yield* json.pipe(Effect.option);
         const parsed = Option.flatMap(body, Schema.decodeUnknownOption(ApiError));
         const error = Option.isSome(parsed) ? parsed.value.error : undefined;

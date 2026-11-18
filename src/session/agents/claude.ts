@@ -1,5 +1,3 @@
-// Claude's side of the session view and start: its Agent SDK messages as items and text, and
-// the agent settings a Claude start sends.
 import { Option, Schema } from "effect";
 import type { AgentConfig } from "../../../protocol/supervisor.js";
 import type { AgentSettings } from "./agent-settings.js";
@@ -14,9 +12,6 @@ import {
   upsert,
 } from "../items.js";
 
-// The Agent SDK message shapes this view reads, named as in the pinned SDK's types. Each message,
-// content block and hunk decodes on its own, so an unknown kind or a malformed part is skipped and
-// extra fields are ignored.
 const Blocks = Schema.Array(Schema.Unknown);
 const Input = Schema.Record(Schema.String, Schema.Unknown);
 
@@ -52,7 +47,6 @@ const decodeTodos = Schema.decodeUnknownOption(Schema.Struct({ todos: Blocks }))
 const decodeTodo = Schema.decodeUnknownOption(Todo);
 const decodeCommand = Schema.decodeUnknownOption(Schema.Struct({ command: Schema.String }));
 
-// The supervisor keeps only the patch of an Edit or Write result, and a new file's content.
 const FileResult = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("create"),
@@ -91,7 +85,6 @@ const UserMessage = Schema.Struct({
 const Message = Schema.Union([
   AssistantMessage,
   UserMessage,
-  // The supervisor forwards only text and thinking deltas of the stream.
   Schema.Struct({
     type: Schema.Literal("stream_event"),
     event: Schema.Struct({
@@ -135,12 +128,10 @@ const decodeSubagent = Schema.decodeUnknownOption(
 
 const repoPath = (path: string) => path.replace(/^\/workspace\/repo\//, "");
 
-// `-start,lines`, leaving out a number the hunk doesn't give.
 const range = (start: number | undefined, lines: number | undefined) =>
   [start, lines].filter((n) => n !== undefined).join(",");
 
-// Claude's structured patch as unified hunks; a new file's content is its diff, as with Codex.
-function change(result: unknown): Change | undefined {
+const change: (result: unknown) => Change | undefined = function change(result) {
   const decoded = decodeFileResult(result);
   if (Option.isNone(decoded) || decoded.value.filePath === "") return undefined;
   const file = decoded.value;
@@ -159,7 +150,7 @@ function change(result: unknown): Change | undefined {
     })
     .join("\n");
   return { path: repoPath(file.filePath), kind: "update", diff };
-}
+};
 
 const blockText = (content: string | ReadonlyArray<unknown> | undefined) =>
   typeof content === "string"
@@ -173,12 +164,15 @@ const blockText = (content: string | ReadonlyArray<unknown> | undefined) =>
         )
         .join("\n");
 
-const notice = (turn: TurnItems, text: string, tone: "info" | "error"): TurnItems => ({
+const notice: (turn: TurnItems, text: string, tone: "info" | "error") => TurnItems = (
+  turn,
+  text,
+  tone,
+) => ({
   ...turn,
   items: [...turn.items, { kind: "notice", id: `notice-${turn.items.length}`, text, tone }],
 });
 
-// Earlier text in the turn was commentary once Claude goes on to use a tool.
 const commentary = (items: Item[]) =>
   items.map((item) => (item.kind === "text" && item.final ? { ...item, final: false } : item));
 
@@ -198,8 +192,11 @@ const toolUse = (block: ToolUseBlock, parent?: string) =>
     ...(parent === undefined ? {} : { parent }),
   });
 
-// A subagent's tools nest under its Agent row; its text and plan stay inside the subagent.
-function subagent(turn: TurnItems, event: unknown, parent: string): TurnItems {
+const subagent: (turn: TurnItems, event: unknown, parent: string) => TurnItems = function subagent(
+  turn,
+  event,
+  parent,
+) {
   const message = decodeMessage(event);
   if (Option.isNone(message)) return turn;
   if (message.value.type === "user") return user(turn, message.value);
@@ -212,51 +209,54 @@ function subagent(turn: TurnItems, event: unknown, parent: string): TurnItems {
     items = upsert(items, toolUse(block.value, parent));
   }
   return { ...turn, items };
-}
+};
 
-function assistant(turn: TurnItems, message: typeof AssistantMessage.Type): TurnItems {
-  // Streamed text is replaced by the message it became.
-  let items = turn.items.filter((item) => !item.id.startsWith("live-"));
-  message.message.content.forEach((entry, index) => {
-    const decoded = decodeContentBlock(entry);
-    if (Option.isNone(decoded)) return;
-    const block = decoded.value;
-    const id = `${message.uuid}-${index}`;
-    if (block.type === "text")
-      items = upsert(items, {
-        kind: "text",
-        id,
-        text: block.text,
-        final: true,
-      });
-    else if (block.type === "thinking")
-      items = upsert(items, { kind: "thinking", id, text: block.thinking });
-    else {
-      items = commentary(items);
-      if (block.name === "TodoWrite") {
-        const todos = Option.getOrElse(
-          Option.map(decodeTodos(block.input), (input) => input.todos),
-          () => [],
-        );
-        const steps = todos.flatMap((entry) => {
-          const todo = decodeTodo(entry);
-          return Option.isNone(todo)
-            ? []
-            : [{ step: todo.value.content, status: todo.value.status }];
+const assistant: (turn: TurnItems, message: typeof AssistantMessage.Type) => TurnItems =
+  function assistant(turn, message) {
+    let items = turn.items.filter((item) => !item.id.startsWith("live-"));
+    message.message.content.forEach((entry, index) => {
+      const decoded = decodeContentBlock(entry);
+      if (Option.isNone(decoded)) return;
+      const block = decoded.value;
+      const id = `${message.uuid}-${index}`;
+      if (block.type === "text")
+        items = upsert(items, {
+          kind: "text",
+          id,
+          text: block.text,
+          final: true,
         });
-        items = upsert(items, { kind: "plan", id: "plan", steps });
-        return;
+      else if (block.type === "thinking")
+        items = upsert(items, { kind: "thinking", id, text: block.thinking });
+      else {
+        items = commentary(items);
+        if (block.name === "TodoWrite") {
+          const todos = Option.getOrElse(
+            Option.map(decodeTodos(block.input), (input) => input.todos),
+            () => [],
+          );
+          const steps = todos.flatMap((entry) => {
+            const todo = decodeTodo(entry);
+            return Option.isNone(todo)
+              ? []
+              : [{ step: todo.value.content, status: todo.value.status }];
+          });
+          items = upsert(items, { kind: "plan", id: "plan", steps });
+          return;
+        }
+        items = upsert(items, toolUse(block));
       }
-      items = upsert(items, toolUse(block));
-    }
-  });
-  const next = { ...turn, items };
-  return message.error === "authentication_failed"
-    ? notice(next, "Claude is signed out. Run scotty login claude.", "error")
-    : next;
-}
+    });
+    const next = { ...turn, items };
+    return message.error === "authentication_failed"
+      ? notice(next, "Claude is signed out. Run scotty login claude.", "error")
+      : next;
+  };
 
-function user(turn: TurnItems, message: typeof UserMessage.Type): TurnItems {
+const user: (turn: TurnItems, message: typeof UserMessage.Type) => TurnItems = function user(
+  turn,
+  message,
+) {
   const changed = change(message.tool_use_result);
   const content = message.message.content;
   let items = turn.items;
@@ -274,10 +274,9 @@ function user(turn: TurnItems, message: typeof UserMessage.Type): TurnItems {
     });
   }
   return { ...turn, items };
-}
+};
 
-// Folds one Claude SDK message into a turn's items.
-export function step(turn: TurnItems, event: unknown): TurnItems {
+export const step: (turn: TurnItems, event: unknown) => TurnItems = function step(turn, event) {
   const parent = decodeSubagent(event);
   if (Option.isSome(parent)) return subagent(turn, event, parent.value.parent_tool_use_id);
   const decoded = decodeMessage(event);
@@ -329,23 +328,23 @@ export function step(turn: TurnItems, event: unknown): TurnItems {
           )
         : turn;
   }
-}
+};
 
-// The answer is the last text Claude finished; streamed text isn't counted.
-export function text(event: unknown): { text: string; complete: boolean } | undefined {
-  const message = decodeAssistant(event);
-  if (Option.isNone(message) || (message.value.parent_tool_use_id ?? null) !== null)
-    return undefined;
-  const parts = message.value.message.content.flatMap((entry) =>
-    Option.toArray(Option.map(decodeTextBlock(entry), (block) => block.text)),
-  );
-  return parts.length === 0 ? undefined : { text: parts.join("\n\n"), complete: true };
-}
+export const text: (event: unknown) => { text: string; complete: boolean } | undefined =
+  function text(event) {
+    const message = decodeAssistant(event);
+    if (Option.isNone(message) || (message.value.parent_tool_use_id ?? null) !== null)
+      return undefined;
+    const parts = message.value.message.content.flatMap((entry) =>
+      Option.toArray(Option.map(decodeTextBlock(entry), (block) => block.text)),
+    );
+    return parts.length === 0 ? undefined : { text: parts.join("\n\n"), complete: true };
+  };
 
-export const startConfig = (
+export const startConfig: (
   claude: { readonly token: string },
   settings: typeof AgentSettings.Type,
-): Extract<typeof AgentConfig.Type, { kind: "claude" }> => ({
+) => Extract<typeof AgentConfig.Type, { kind: "claude" }> = (claude, settings) => ({
   kind: "claude",
   model: settings.model,
   effort: settings.effort,

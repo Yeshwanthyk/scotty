@@ -24,7 +24,6 @@ import {
 } from "../../src/creds/connections.js";
 import { SignaturePreset } from "../../src/hooks/config.js";
 
-// Pasted credentials arrive on stdin, never in argv or command output.
 export const connect = Command.make(
   "connect",
   {

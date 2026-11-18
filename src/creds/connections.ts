@@ -7,7 +7,6 @@ import {
   signingKey,
 } from "../hooks/config.js";
 
-// Lowercase and explicit: the name is in the hook URL and in every session it starts.
 export const connectionName = /^[a-z0-9][a-z0-9-]{0,39}$/;
 export const ConnectionName = Schema.String.check(Schema.isPattern(connectionName));
 export const InternalConnectionName = ConnectionName.check(
@@ -25,7 +24,6 @@ export const ConnectionHost = Schema.String.check(
     }
   }),
 );
-// A header name, optionally followed by its scheme: `Authorization: Bearer` or `X-Api-Key`.
 export const ConnectionHeader = Schema.String.check(
   Schema.isMaxLength(256),
   Schema.isPattern(/^[!#$%&'*+.^_`|~0-9A-Za-z-]+(?:: [A-Za-z][A-Za-z0-9_-]*)?$/),
@@ -121,7 +119,9 @@ export const NewConnection = Schema.Union([
     policy: Schema.optionalKey(ToolPolicy),
   }),
 ]);
-export const configFor = (input: typeof NewConnection.Type): typeof ConnectionConfig.Type => {
+export const configFor: (input: typeof NewConnection.Type) => typeof ConnectionConfig.Type = (
+  input,
+) => {
   switch (input.kind) {
     case "inbound":
       return {
@@ -177,11 +177,9 @@ export const ConnectionCreated = Schema.Union([
   Mcp,
 ]);
 
-// A key ties deliveries (or API creates) to one session.
 export const Key = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200));
 
 export const DeliveryOutcome = Schema.Literals(["accepted", "rejected", "duplicate", "skipped"]);
-// Why a delivery was rejected or skipped; the UI and CLI decode these same codes.
 export const DeliveryReason = Schema.Literals([
   "missing_headers",
   "unknown_connection",
@@ -196,5 +194,4 @@ export const DeliveryReason = Schema.Literals([
   "key_conflict",
   "session_unavailable",
 ]);
-// How many deliveries are kept; older ones are dropped as new ones arrive.
 export const keptDeliveries = 500;

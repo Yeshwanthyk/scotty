@@ -162,15 +162,11 @@ const RunAnswer = Schema.Struct({
 const SettledRun = Schema.Struct({ ...RunAnswer.fields, key: Schema.NullOr(Schema.String) });
 const DueRow = Schema.Struct({ due: Schema.NullOr(Schema.Number) });
 const IdRow = Schema.Struct({ id: Schema.String });
-// How many runs are kept, and how many a list returns.
 const keptRuns = 500;
 const listedRuns = 100;
-// The newest deliveries a list returns.
 const listedDeliveries = 200;
-// Sessions can run for hours; refuse a token that could expire mid-session.
 const tokenMargin = 24 * 60 * 60 * 1000;
 const day = 24 * 60 * 60 * 1000;
-// `claude setup-token` makes a token that lasts a year and doesn't say when it expires.
 const claudeLifetime = 365 * day;
 const claudeWarning = 14 * day;
 const Claims = Schema.Array(Schema.Struct({ id: Schema.String, token: Schema.String }));
@@ -180,7 +176,6 @@ class CredentialStoreError extends Schema.TaggedError<CredentialStoreError>()(
   { message: Schema.String },
 ) {}
 
-// verifySignature rejected instead of returning a verdict.
 class SignatureCheckFailure extends Schema.TaggedError<SignatureCheckFailure>()(
   "SignatureCheckFailure",
   {},
@@ -196,34 +191,22 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       yield* sql`CREATE TABLE IF NOT EXISTS device (id INTEGER PRIMARY KEY CHECK (id = 1), device_auth_id TEXT NOT NULL, user_code TEXT NOT NULL, interval INTEGER NOT NULL, expires_at INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS github (id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, login TEXT NOT NULL, name TEXT NOT NULL, email TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS claude (id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, expires_at INTEGER NOT NULL)`;
-      // The zip-upload skills table this replaced; its zips in R2 are orphaned.
       yield* sql`DROP TABLE IF EXISTS skills`;
-      // A skill's name is unique across sources, since every source unpacks into one folder.
       yield* sql`CREATE TABLE IF NOT EXISTS skill_sources (id TEXT PRIMARY KEY, repo TEXT NOT NULL, path TEXT NOT NULL, ref TEXT, commit_sha TEXT NOT NULL, size INTEGER NOT NULL, fetched INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS source_skills (name TEXT PRIMARY KEY, source TEXT NOT NULL, description TEXT NOT NULL, manual INTEGER NOT NULL, enabled INTEGER NOT NULL, digest TEXT NOT NULL)`;
-      // The skill Claude sessions use as their output style.
       yield* sql`CREATE TABLE IF NOT EXISTS claude_style (id INTEGER PRIMARY KEY CHECK (id = 1), skill TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS session_index (id TEXT PRIMARY KEY)`;
-      // Sessions holding one of the stage's running slots (maxRunning). A claim's token changes on
-      // every claim, so dropping a stale claim never drops a newer one for the same session.
       yield* sql`CREATE TABLE IF NOT EXISTS running (id TEXT PRIMARY KEY, token TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS session_keys (key TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)`;
       yield* sql`CREATE TABLE IF NOT EXISTS request_sessions (req TEXT PRIMARY KEY, id TEXT)`;
-      // What a search matches (`searchText`). Sessions made before it have no row: they are
-      // listed but never found.
       yield* sql`CREATE TABLE IF NOT EXISTS session_search (id TEXT PRIMARY KEY, text TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS connections (name TEXT PRIMARY KEY, config TEXT NOT NULL, secret TEXT NOT NULL, created INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS mcp_oauth (name TEXT PRIMARY KEY, generation TEXT NOT NULL, nonce TEXT, expires INTEGER NOT NULL, data TEXT)`;
       yield* sql`CREATE TABLE IF NOT EXISTS deliveries (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, connection TEXT NOT NULL, at INTEGER NOT NULL, outcome TEXT NOT NULL, reason TEXT, session TEXT)`;
       yield* sql`CREATE TABLE IF NOT EXISTS automations (name TEXT PRIMARY KEY, definition TEXT NOT NULL, enabled INTEGER NOT NULL, next_due INTEGER, created INTEGER NOT NULL)`;
-      // A run's source (the schedule time, delivery or manual request) names it once, so a retried
-      // firing finds the same run. What it fires is fixed when it is received.
       yield* sql`CREATE TABLE IF NOT EXISTS runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, automation TEXT NOT NULL, source TEXT NOT NULL, trigger TEXT NOT NULL, at INTEGER NOT NULL, status TEXT NOT NULL, reason TEXT, session TEXT, delivery TEXT, repo TEXT NOT NULL, agent TEXT NOT NULL, prompt TEXT, key TEXT, branch TEXT, action TEXT NOT NULL, scripted INTEGER NOT NULL, tried INTEGER NOT NULL DEFAULT 0, UNIQUE (automation, source))`;
       yield* sql`CREATE INDEX IF NOT EXISTS runs_by_automation ON runs (automation, seq)`;
-      // The size a run asks for, when its automation names one. A table of its own, so adding sizes
-      // left the stored `runs` table as it was.
       yield* sql`CREATE TABLE IF NOT EXISTS run_sizes (id TEXT PRIMARY KEY, size TEXT NOT NULL)`;
-      // A repository's own defaults, under its `repoKey`.
       yield* sql`CREATE TABLE IF NOT EXISTS repo_settings (repo TEXT PRIMARY KEY, size TEXT NOT NULL)`;
 
       yield* sql`CREATE TABLE IF NOT EXISTS agent_defaults (id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL)`;
@@ -290,7 +273,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
 
       const runRow = (row: unknown) => Schema.decodeUnknownEffect(RunRow)(row);
 
-      // The one alarm is the soonest of the enabled schedules and the runs waiting for an answer.
       const rearm = Effect.gen(function* () {
         const { due } = yield* Schema.decodeUnknownEffect(DueRow)(
           (yield* sql`SELECT MIN(due) AS due FROM (SELECT next_due AS due FROM automations WHERE enabled = 1 AND next_due IS NOT NULL UNION ALL SELECT MAX(tried, at) + ${refireAfterMs} AS due FROM runs WHERE status = 'received')`)[0],
@@ -299,7 +281,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
         else yield* state.storage.setAlarm(due);
       });
 
-      // Records a firing as a run: received with what it will send, or skipped with why.
       const receive = (input: {
         automation: string;
         definition: Definition;
@@ -319,7 +300,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             input.trigger === "event"
               ? `${input.source}:${input.automation}`
               : crypto.randomUUID().replaceAll("-", "");
-          // A sized run is never recorded without its size.
           const inserted = yield* sql.withTransaction(
             Effect.gen(function* () {
               const rows =
@@ -343,7 +323,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
           return row === undefined ? null : (yield* Schema.decodeUnknownEffect(SessionRow)(row)).id;
         });
 
-      // Request targets outlive both routing keys and the bounded run history.
       const resolveSession = (req: string, key: string | null) =>
         Effect.gen(function* () {
           const row = (yield* sql`SELECT id FROM request_sessions WHERE req = ${req}`)[0];
@@ -354,7 +333,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
           return id;
         });
 
-      // Every live socket here watches the session list.
       const broadcast = (
         frame: { kind: "session"; session: SessionView } | { kind: "removed"; id: string },
       ) =>
@@ -365,7 +343,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
         });
 
       return {
-        // `/api/sessions/live`: the client reads the list once, then applies these frames.
         fetch: Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
           if (request.headers["upgrade"]?.toLowerCase() !== "websocket")
@@ -377,14 +354,11 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
           socket.close(1008, "Live sockets take no messages").pipe(Effect.ignoreCause),
         webSocketClose: (socket: Cloudflare.WebSocket) =>
           socket.close(1000, "").pipe(Effect.ignoreCause),
-        // A Session DO calls this when its list-visible view changes; a deleted session is quiet.
         sessionChanged: (session: SessionView) =>
           Effect.gen(function* () {
             const rows = yield* sql`SELECT id FROM session_index WHERE id = ${session.identity.id}`;
             if (rows.length > 0) yield* broadcast({ kind: "session", session });
           }),
-        // The first caller for a key, or for a request id when there is no key, names the
-        // session; later callers get that one. From here the session is listed and searchable.
         reserve: (input: {
           req: string;
           key?: string;
@@ -411,10 +385,8 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               yield* sql`UPDATE runs SET session = ${id} WHERE id = ${input.run} AND status = 'received'`;
             return id;
           }).pipe(sql.withTransaction),
-        // A retry keeps its target even after the key is released; it may not be made yet.
         resolveSession: (req: string, key: string | null) =>
           resolveSession(req, key).pipe(sql.withTransaction),
-        // Sessions whose search text holds the query, any case.
         search: (query: string) =>
           Effect.gen(function* () {
             const rows =
@@ -429,8 +401,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             const rows = yield* sql`SELECT id FROM session_index WHERE id = ${session}`;
             return rows.length > 0;
           }),
-        // Takes a running slot for the session unless `max` are taken; a session that holds one
-        // keeps it. Answers with every claim, so a refused caller can look for stale ones.
         claim: (id: string, max: number) =>
           Effect.gen(function* () {
             const token = crypto.randomUUID();
@@ -475,7 +445,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               ),
             );
           }),
-        // Only generated secrets are returned. Pasted credentials stay here.
         addConnection: (input: typeof NewConnection.Type) =>
           Effect.gen(function* () {
             const checked = yield* Schema.decodeUnknownEffect(NewConnection)(input).pipe(
@@ -506,7 +475,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               () => new CredentialStoreError({ message: "Could not store connection" }),
             ),
           ),
-        // Internal RPC for the streaming proxy only; no HTTP API exposes this method.
         reachCredential: (name: string) =>
           Effect.gen(function* () {
             const row =
@@ -581,7 +549,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
           answer: { kind: "code"; code: string; iss?: string } | { kind: "denied" },
         ) =>
           Effect.gen(function* () {
-            // Claim before any outside call. Unknown, expired and reused callbacks never redeem a code.
             const row =
               (yield* sql`UPDATE mcp_oauth SET nonce = NULL WHERE name = ${name} AND nonce = ${nonce} AND expires > ${Date.now()} RETURNING generation, data`)[0];
             if (row === undefined) return { status: "invalid-state" as const };
@@ -639,7 +606,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             const rows = yield* sql`DELETE FROM connections WHERE name = ${name} RETURNING name`;
             return rows.length > 0;
           }),
-        // Extraction, verification and routing use this one stored connection snapshot.
         verifyDelivery: (input: {
           connection: string;
           headers: Readonly<Record<string, string>>;
@@ -666,7 +632,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             const decoded = readDelivery(config.signature, input.headers, input.body);
             if (decoded.verdict !== "ok") return decoded;
             const id = decoded.values.id;
-            // Web Crypto refusing the key or signature is a delivery that failed verification.
             const verdict = yield* Effect.tryPromise({
               try: () =>
                 verifySignature(config.signature, {
@@ -724,7 +689,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               unhandled: config.signature.unhandled,
             } as const;
           }),
-        // Deliveries are a log; the oldest go as new ones arrive.
         recordDelivery: (delivery: {
           id: string;
           connection: string;
@@ -764,8 +728,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               }),
             );
           }),
-        // Adding or replacing leaves the automation off, so whoever wrote it (an agent, say)
-        // doesn't also decide that it runs.
         putAutomation: (name: string, definition: Definition, replace: boolean) =>
           Effect.gen(function* () {
             const text = yield* Schema.encodeEffect(Schema.fromJsonString(Definition))(definition);
@@ -775,7 +737,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             yield* rearm;
             return rows.length > 0;
           }),
-        // A schedule counts from now: nothing it missed while off runs.
         enableAutomation: (name: string, enabled: boolean) =>
           Effect.gen(function* () {
             const row = (yield* automations).find((item) => item.name === name);
@@ -791,7 +752,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             yield* rearm;
             return rows.length > 0;
           }),
-        // Run now, on or off, with the time as its payload.
         runAutomation: (name: string) =>
           Effect.gen(function* () {
             const row = (yield* automations).find((item) => item.name === name);
@@ -806,8 +766,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             yield* rearm;
             return run;
           }),
-        // What a received run sends, or its stored answer if another attempt settled it.
-        // Marks it tried, so the alarm fires it again only if this attempt never answers.
         takeRun: (id: string) =>
           Effect.gen(function* () {
             const taken = yield* sql.withTransaction(
@@ -860,7 +818,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             yield* rearm;
             return taken;
           }),
-        // The first answer for a run is its answer.
         settleRun: (
           id: string,
           outcome: {
@@ -894,9 +851,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                 : yield* sql`SELECT id, automation, trigger, at, status, reason, session, delivery, key FROM runs WHERE automation = ${automation} ORDER BY seq DESC LIMIT ${listedRuns}`;
             return yield* Effect.forEach(rows, runRow);
           }),
-        // Due schedules become runs and move on; then each received run without an answer is
-        // handed to the Worker, which starts or steers its session. Everything this object
-        // records is written before it hands anything over.
         alarm: () =>
           Effect.gen(function* () {
             const now = Date.now();
@@ -943,7 +897,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               Schema.decodeUnknownEffect(SessionRow)(row),
             );
           }),
-        // Each source's tarball is in R2 at sourceKey(repo, commit) before its row is written.
         skillSources: () =>
           Effect.gen(function* () {
             const sources = yield* Effect.forEach(
@@ -972,8 +925,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                 })),
             }));
           }),
-        // Adds or refreshes a source. New skills arrive off; an updated one keeps its switch.
-        // A name another source already has refuses the whole source.
         putSource: (
           source: {
             id: string;
@@ -1022,7 +973,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               .filter((row) => !found.some((skill) => skill.name === row.name))
               .map((row) => row.name);
             for (const name of removed) yield* sql`DELETE FROM source_skills WHERE name = ${name}`;
-            // The old tarball can go once no source still points at it.
             const stale =
               previous === null || previous === source.commit
                 ? null
@@ -1044,7 +994,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                 : Schema.decodeUnknownEffect(SizeRow)(rows[0]).pipe(Effect.map((row) => row.size)),
             ),
           ),
-        // No size clears the default.
         setRepoSize: (repo: string, size: typeof Size.Type | null) =>
           (size === null
             ? sql`DELETE FROM repo_settings WHERE repo = ${repoKey(repo)}`
@@ -1071,7 +1020,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                   ),
             ),
           ),
-        // A style skill is switched on, since the style is built from its installed folder.
         setClaudeStyle: (name: string | null) =>
           Effect.gen(function* () {
             if (name === null) {
@@ -1088,7 +1036,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
           sql`UPDATE source_skills SET enabled = ${enabled ? 1 : 0} WHERE name = ${name} RETURNING name`.pipe(
             Effect.map((rows) => rows.length > 0),
           ),
-        // What the caller may delete from R2: the tarball, unless another source shares it.
         removeSource: (id: string) =>
           Effect.gen(function* () {
             const rows =
@@ -1100,7 +1047,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               yield* sql`SELECT id FROM skill_sources WHERE repo = ${source.repo} AND commit_sha = ${source.commit_sha}`;
             return { repo: source.repo, commit: source.commit_sha, shared: shared.length > 0 };
           }).pipe(sql.withTransaction),
-        // What a starting session installs: each source with a skill on, and the names to hide.
         sessionSkills: () =>
           Effect.gen(function* () {
             const sources = yield* Effect.forEach(
@@ -1120,7 +1066,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                 path: source.path,
                 commit: source.commit_sha,
               })),
-              // Only an installed skill can be the style.
               style:
                 style[0] === undefined
                   ? undefined
@@ -1259,7 +1204,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                   },
             ),
           ),
-        // Goes only to a Claude session's agent process (AGENTS.md, credential exceptions).
         claudeToken: () =>
           Effect.gen(function* () {
             const row = yield* claude;
@@ -1269,7 +1213,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               });
             return { token: row.token };
           }),
-        // GitHub requests that need the token run here; only their answers leave this object.
         repositories: (page: number, perPage: number) =>
           Effect.gen(function* () {
             const row = yield* gitHub;
@@ -1311,7 +1254,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               ),
             );
           }),
-        // The body streams to the caller, which enforces the size cap.
         skillTarball: (repo: string, commit: string) =>
           Effect.gen(function* () {
             const row = yield* gitHub;
@@ -1327,7 +1269,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               ),
             );
           }),
-        // A session's git and gh traffic, already checked against Scotty's push policy.
         gitHubProxy: (request: ProxyRequest) =>
           Effect.gen(function* () {
             const row = yield* gitHub;
@@ -1342,7 +1283,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                 : Effect.succeed({ name: row.name, email: row.email }),
             ),
           ),
-        // The refresh token never leaves this object; a session gets only the access token.
         sessionToken: () =>
           Effect.gen(function* () {
             const rows =

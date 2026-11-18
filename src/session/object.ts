@@ -43,9 +43,9 @@ import { SupervisorLink, type SocketInput } from "./supervisor-link.js";
 import { supervisorEvent } from "./supervisor-events.js";
 import { conversationView, sessionView, turnOutcome } from "./view.js";
 
-const scriptedStart = (
+const scriptedStart: (
   kind: typeof AgentKind.Type,
-): [typeof AgentConfig.Type, { name: string; email: string }] => [
+) => [typeof AgentConfig.Type, { name: string; email: string }] = (kind) => [
   kind === "codex"
     ? { kind: "codex", scripted: true, model: "scripted" }
     : { kind: "claude", scripted: true, model: "scripted" },
@@ -54,8 +54,6 @@ const scriptedStart = (
 
 export class SessionContainer extends Cloudflare.Container<SessionContainer>()(
   "SessionContainer",
-  // deploy/deployer.ts makes the app; each start names its image and size
-  // (src/places/cloudflare.ts), so the declaration holds no image.
   Effect.map(Stack, ({ stage }) => ({
     name: `scotty-${stage}-sessions`,
     schedulingPolicy: "durable_object" as const,
@@ -64,23 +62,17 @@ export class SessionContainer extends Cloudflare.Container<SessionContainer>()(
 
 export const SessionArtifacts = Cloudflare.R2.Bucket(
   "SessionArtifacts",
-  // Teardown removes the stage with its files; nothing in it outlives the stage.
   Effect.map(Stack, ({ stage }) => ({ name: `scotty-${stage}-artifacts`, forceDestroy: true })),
 );
 
-// The deployer sets SCOTTY_MAX_RUNNING from the stage's maxRunning. It is read from the raw env:
-// Alchemy's Config inside a DO JSON-parses "2" into a number, which Config.Int then refuses.
 const MaxRunning = Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThan(0));
 
-// workerd rejects monitor() with the exit code when a container exits non-zero.
 const ExitStatus = Schema.Struct({ exitCode: Schema.Int });
-// The supervisor was unreachable, or answered `path` with a non-2xx `status`.
 class SupervisorFailure extends Schema.TaggedError<SupervisorFailure>()("SupervisorFailure", {
   path: Schema.String,
   status: Schema.optional(Schema.Number),
 }) {}
 
-// Live snapshots replay the log, so a burst of events shares one.
 const pushEvery = Duration.millis(250);
 
 export default class SessionObject extends Cloudflare.DurableObject<SessionObject>()(
@@ -88,7 +80,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
   Effect.gen(function* () {
     const storage = yield* Cloudflare.DurableObjectState;
     const credentials = yield* CredsObject;
-    // This class's own namespace, to ask another session whether it still runs.
     const sessions = yield* Cloudflare.DurableObjectScope;
     const env = yield* Cloudflare.WorkerEnvironment;
     yield* bindSessionContainer(SessionContainer);
@@ -96,7 +87,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
     return Effect.gen(function* () {
       const rawMax: unknown = env["SCOTTY_MAX_RUNNING"];
       const max = yield* Schema.decodeUnknownEffect(MaxRunning)(rawMax);
-      // The container handle exists only at run time.
       const container = storage.container;
       if (container === undefined) return yield* Effect.die("Session container binding missing");
       const log = yield* openLog(storage);
@@ -106,11 +96,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
       const places = {
         cloudflare: cloudflarePlace(container, storage.raw.exports),
       } satisfies Record<typeof PlaceKind.Type, Place>;
-      // Logs written before `created.place` ran on Cloudflare.
       const where = () => places[log.state.created?.place ?? "cloudflare"];
-      // Live sockets get a fresh snapshot after appends, at most one per `pushEvery`; the owner's
-      // Creds DO hears when the list-visible view changes. Neither is state: a lost push is
-      // repaired by the next one, or by the snapshot a reconnect gets.
       let pushQueued = false;
       let listed = "";
       const snapshot = () =>
@@ -130,7 +116,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         const serialized = JSON.stringify(view);
         if (serialized === listed) return;
         yield* credentials.getByName("owner").sessionChanged(view);
-        // Only a delivered view counts; a failed one is sent again with the next push.
         listed = serialized;
       }).pipe(Effect.ignoreCause);
       const changed = Effect.gen(function* () {
@@ -154,11 +139,8 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         );
 
       let link: SupervisorLink;
-      // Work queued for an older generation, or for a session that has ended, does nothing.
       const current = (gen: number) => log.state.gen === gen && live(log.state);
       const port = () => where().port(7000);
-      // Share one snapshot between container egress and agent MCP config for this generation.
-      // After DO hibernation, the start command reads again if this instance has no snapshot.
       let startConnections: { gen: number; items: readonly ConnectionMetadata[] } | undefined;
       const connectionsFor = (gen: number) =>
         Effect.gen(function* () {
@@ -167,11 +149,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           startConnections = { gen, items };
           return items;
         });
-      // Container work runs after the caller returns, one operation at a time, so a resume
-      // waits for the stop's destroy. Its outcome arrives as a later event.
       const lifecycle = yield* Semaphore.make(1);
-      // When the owner last reached the container through the terminal or a preview. Kept in
-      // memory only: a request keeps the Session DO resident until the idle alarm reads it.
       let used = 0;
       const outside = new Set<Command["kind"]>([
         "container.start",
@@ -181,16 +159,9 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         "watch",
         "idle",
       ]);
-      // Awaits the running container's exit, so a crash or exit is recorded when it happens,
-      // not when someone next looks. One watcher at a time; a new one replaces the last.
-      // Nothing closes the isolate's scope, so the handle gets a scope of its own that goes away
-      // with this instance instead of adding a finalizer per activation.
       const watcher = yield* FiberHandle.make<void, never>().pipe(
         Scope.provide(yield* Scope.make()),
       );
-      // monitor() resolves on a clean exit and rejects with the exit code on a crash. Any other
-      // rejection (the Session DO losing its link to the container) says nothing about the
-      // container; the watch deadline re-checks it.
       const exited = (gen: number) => {
         const record = (end: { reason: "exited" } | { reason: "crashed"; exitCode: number }) =>
           current(gen)
@@ -210,8 +181,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 onSome: ({ exitCode }) => record({ reason: "crashed", exitCode }),
               }),
           }),
-          // Nothing joins the watcher, so a failure to record the exit is logged here. A newer
-          // watcher interrupting this one is not a failure.
           Effect.catchCause((cause) =>
             Cause.hasInterruptsOnly(cause)
               ? Effect.void
@@ -220,22 +189,22 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           Effect.provide(context),
         );
       };
-      // Called once the supervisor answers, when the container surely exists: monitor() settles at
-      // once for a container not yet placed. The inactivity timeout keeps the container running
-      // while the Session DO is evicted, until the watch deadline's alarm brings it back.
       const watch = (gen: number) =>
         Effect.gen(function* () {
           if (!current(gen)) return;
           yield* Effect.tryPromise(() => container.setInactivityTimeout(inactivityTimeout));
           yield* FiberHandle.run(watcher, exited(gen));
           yield* append({ kind: "container.watched", gen }, "session");
-          // A failed watch is not a failed dial; the next dial or watch deadline tries again.
         }).pipe(Effect.ignoreCause({ log: "Error", message: "watch failed" }));
-      const dispatch = (action: Command | undefined): Effect.Effect<void, never, RuntimeContext> =>
+      const dispatch: (
+        action: Command | undefined,
+      ) => Effect.Effect<void, never, RuntimeContext> = (action) =>
         action !== undefined && outside.has(action.kind)
           ? storage.waitUntil(lifecycle.withPermit(perform(action)))
           : perform(action);
-      const perform = (action: Command | undefined): Effect.Effect<void, never, RuntimeContext> =>
+      const perform: (action: Command | undefined) => Effect.Effect<void, never, RuntimeContext> = (
+        action,
+      ) =>
         Effect.gen(function* () {
           if (!action) return;
           switch (action.kind) {
@@ -245,8 +214,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               if (!(yield* where().running())) {
                 const owner = credentials.getByName("owner");
                 let claim = yield* owner.claim(id(), max);
-                // A full cap first drops the claims of sessions that no longer run, so a lost
-                // release can't hold a slot. A session that doesn't answer keeps its claim.
                 if (!claim.granted) {
                   const stale = yield* Effect.filter(
                     claim.claims,
@@ -287,8 +254,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               }
               if (current(action.gen))
                 yield* append({ kind: "container.dial.started", gen: action.gen }, "session");
-              // A new container takes a moment to listen, longer on a new host; retry until the
-              // fold's container deadline before reporting dial.failed.
               let attempt = log.history.filter(
                 (event) => event.kind === "container.dial.attempt" && event.gen === action.gen,
               ).length;
@@ -300,7 +265,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                     "session",
                   );
                 const started = Date.now();
-                // Only the network operation is timed out, as before. Appends hold no network work.
                 yield* link
                   .dial(port, action.gen, 0, () => current(action.gen))
                   .pipe(
@@ -337,7 +301,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   schedule: Schedule.spaced("500 millis").pipe(
                     Schedule.upTo({ duration: Duration.millis(deadlines.container) }),
                   ),
-                  // Not container.running: it can still read false just after start().
                   while: () => current(action.gen),
                 }),
               );
@@ -345,7 +308,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               return;
             }
             case "dial": {
-              // A dial queued behind the start may find the socket already connected.
               if (!current(action.gen) || log.state.connected) return;
               yield* link
                 .dial(port, action.gen, action.after, () => current(action.gen))
@@ -355,7 +317,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             }
             case "start": {
               if (!current(action.gen)) return;
-              // Sent over the socket only; never appended to the event log.
               const owner = credentials.getByName("owner");
               const agentConfig = {
                 codex: (settings: typeof AgentSettings.Type) =>
@@ -369,7 +330,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               } satisfies Record<typeof AgentKind.Type, unknown>;
               const defaults = yield* stageAgentDefaults(yield* owner.agentDefaults());
               const settings = defaults[action.agentKind];
-              // The scripted stand-in needs no account, so e2e runs without the owner's sign-ins.
               const signedIn = yield* Effect.exit(
                 action.scripted === true
                   ? Effect.succeed(scriptedStart(action.agentKind))
@@ -406,9 +366,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   ? { style: skills.style }
                   : {}),
               };
-              // The deployer always sets SCOTTY_HATCH_BASE to the stage's domain.
               const hatchBase = yield* Effect.orDie(Config.String("SCOTTY_HATCH_BASE"));
-              // Resume only when the save reached the new container; otherwise start clean.
               const restored =
                 action.resume === undefined
                   ? false
@@ -425,8 +383,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                       ),
                       Effect.orElseSucceed(() => false),
                     );
-              // Settings as they are now; a running session keeps what it started with.
-              // A failed read fails the start (start_failed, retryable) rather than drop a setting.
               const saved = yield* Effect.orDie(bucket.get(instructionsKey));
               const instructions = saved === null ? "" : yield* Effect.orDie(saved.text());
               const installed = yield* Effect.forEach(skills.sources, (source) =>
@@ -485,7 +441,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             case "save": {
               link.send({ type: "ack", gen: action.gen, n: 1, ack: action.ack });
               const turn = action.turn;
-              // The tar can take seconds; the result arrives as a later event.
               yield* storage.waitUntil(
                 supervisor(`/save?gen=${action.gen}`).pipe(
                   Effect.flatMap((response) => Effect.tryPromise(() => response.arrayBuffer())),
@@ -500,8 +455,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               return;
             }
             case "destroy":
-              // Every stop and failure ends here, so this is where the running slot goes back,
-              // even when the destroy fails.
               yield* Effect.ensuring(
                 Effect.gen(function* () {
                   if (yield* where().running()) yield* where().destroy();
@@ -511,8 +464,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               return;
             case "idle": {
               if (!current(action.gen)) return;
-              // An unanswered supervisor counts as no terminal: the session sleeps. The fold
-              // ignores the stop if a prompt or use arrived meanwhile.
               const terminals = yield* supervisor("/terminals").pipe(
                 Effect.flatMap((response) => Effect.tryPromise(() => response.json())),
                 Effect.flatMap(Schema.decodeUnknownEffect(Terminals)),
@@ -549,7 +500,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               return;
           }
         }).pipe(
-          // A start that hangs (an R2 read, a supervisor PUT) must not hold the lifecycle permit.
           action?.kind === "start" ? Effect.timeout("30 seconds") : (effect) => effect,
           Effect.catchTag("ContainerStartFailed", () =>
             action?.kind === "container.start" && current(action.gen)
@@ -562,10 +512,8 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           Effect.catchCause((cause) =>
             Effect.gen(function* () {
               if (action === undefined || !("gen" in action) || !current(action.gen)) return;
-              // Error text only: R2, RPC and supervisor failures carry no credentials.
               if (action.kind === "start") yield* Effect.logError("start failed", cause);
               if (action.kind === "container.start" || action.kind === "dial") {
-                // A dial that fails because the container is gone is a stop, not a retry.
                 yield* dispatch(
                   yield* append(
                     (yield* where().running())
@@ -609,16 +557,12 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         yield* dispatch(yield* append({ kind: "sup.redial", gen: log.state.gen }, "session"));
       }
       return {
-        // Makes the session, or prompts it, or answers a request id it has already seen. The
-        // Durable Object runs one call at a time, so concurrent callers with one id agree.
-        // Without `create`, a session not yet made is left alone and answered "uncreated".
         start: (input: {
           req: string;
           prompt: string;
           images?: readonly PromptImage[];
           repo: string;
           agentKind: typeof AgentKind.Type;
-          // Only with `create`: the size to make the session at; absent is the default.
           size?: typeof Size.Type;
           create?: {
             id: string;
@@ -626,7 +570,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             title: string;
             image: string;
             place: typeof PlaceKind.Type;
-            // The repository's default, used when the request names no size.
             repoSize?: typeof Size.Type;
             scripted?: true;
             idleAfter?: number;
@@ -683,7 +626,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 "api",
               ),
             );
-            // A prompt the session refused (it failed, or its turn moved on) did not go in.
             const status = log.state.requests.find((item) => item.req === input.req)?.status;
             return answer(
               status === "pending" || status === "delivered" ? "steered" : "unavailable",
@@ -692,7 +634,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         request: (input: {
           kind: "prompt" | "interrupt";
           req: string;
-          // Absent: the session's current turn, for a caller that has not read it.
           turn?: string;
           text: string;
           images?: readonly PromptImage[];
@@ -756,7 +697,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             );
             return answer("ended");
           }),
-        // Absent `size` keeps the current one.
         resume: (size?: typeof Size.Type) =>
           Effect.gen(function* () {
             const conflict = resizeConflict(log.state, size);
@@ -769,7 +709,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             );
             return { kind: "resumed" as const, version: 1, session: sessionView(id(), log.state) };
           }),
-        // The Worker calls this only after the bytes are in R2.
         attach: (file: {
           file: string;
           name: string;
@@ -777,8 +716,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           size: number;
           caption?: string;
         }) => append({ kind: "file.attached", ...file }, "files").pipe(Effect.asVoid),
-        // Deleting drops the log, the save and the files; a live session must be stopped first.
-        // A log with no `created` is left by a delete that stopped partway, and goes too.
         remove: () =>
           Effect.gen(function* () {
             const live = log.state.phase !== "stopped" && log.state.phase !== "failed";
@@ -793,33 +730,24 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           }),
         view: () => Effect.sync(() => ({ version: 1, session: sessionView(id(), log.state) })),
         conversation: () => Effect.sync(() => conversationView(log.state, log.history)),
-        // How an automation run's turn went: its steer's, or the first prompt's; null once deleted.
         outcome: (req?: string) =>
           Effect.sync(() => (log.state.created === undefined ? null : turnOutcome(log.state, req))),
         log: () => Effect.sync(() => log.history),
-        // Read-only: what the log says about this session's runs, for the stats page.
         stats: () => Effect.sync(() => sessionStats(log.history)),
-        // A preview request from the Worker, whose Host is `<port>-<id>.<base>`, or the
-        // terminal socket at `/api/sessions/<id>/terminal`. It never starts a container and
-        // appends nothing.
         fetch: Effect.gen(function* () {
           const request = yield* HttpServerRequest.toWeb(
             yield* HttpServerRequest.HttpServerRequest,
           ).pipe(Effect.orDie);
           const url = new URL(request.url);
           const label = /^(\d{1,5})-/.exec(url.hostname);
-          // Another session asking, when the cap is full, whether this one still holds its slot.
-          // The Worker forwards only previews, the terminal and `/live`, so only a DO gets here.
           if (label === null && url.pathname === "/running")
             return HttpServerResponse.empty({
               status: live(log.state) && log.state.gen !== undefined ? 204 : 410,
             });
-          // Watching isn't using: a live socket leaves the idle window alone.
           if (label === null && url.pathname.endsWith("/live")) {
             if (request.headers.get("upgrade")?.toLowerCase() !== "websocket")
               return HttpServerResponse.text("Expected a WebSocket", { status: 426 });
             const [response, socket] = yield* Cloudflare.upgrade();
-            // A failed first send leaves the socket to the next push.
             yield* socket.send(snapshot()).pipe(Effect.ignoreCause);
             return response;
           }
@@ -837,7 +765,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             );
           }
           const port = Number(label[1]);
-          // Dev servers such as Vite refuse a Host they don't know, so the target is localhost.
           const headers = new Headers(request.headers);
           headers.delete("host");
           const target = `http://localhost:${port}${url.pathname}${url.search}`;
@@ -848,14 +775,12 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             redirect: "manual" as const,
           };
           return yield* Effect.tryPromise(() => where().port(port).fetch(target, init)).pipe(
-            // raw hands the Response back untouched, so a 101 keeps its webSocket.
             Effect.map((response) => HttpServerResponse.raw(response)),
             Effect.orElseSucceed(() =>
               HttpServerResponse.text(`Nothing is answering on port ${port} yet`, { status: 502 }),
             ),
           );
         }),
-        // Live sockets only listen.
         webSocketMessage: (socket: Cloudflare.WebSocket) =>
           socket.close(1008, "Live sockets take no messages").pipe(Effect.ignoreCause),
         webSocketClose: (socket: Cloudflare.WebSocket) =>

@@ -2,9 +2,6 @@ import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { SourceFailure, type SourceSpec } from "../settings/skills.js";
 
-// GitHub requests that need the owner's token. Only the Creds DO calls these: the token never
-// leaves it, and the Worker gets back the answer.
-
 const headers = (token: string, accept: string) => ({
   accept,
   authorization: `Bearer ${token}`,
@@ -14,11 +11,9 @@ const headers = (token: string, accept: string) => ({
 const Repository = Schema.Struct({ default_branch: Schema.String.check(Schema.isMinLength(1)) });
 class RepositoryFailure extends Schema.TaggedError<RepositoryFailure>()("RepositoryFailure", {
   message: Schema.String,
-  // GitHub says the repository doesn't exist, or the token can't see it.
   missing: Schema.optionalKey(Schema.Literal(true)),
 }) {}
 
-// The caller pages explicitly; only names and continuation leave the Creds DO.
 const Catalog = Schema.Array(
   Schema.Struct({
     full_name: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)),
@@ -87,7 +82,6 @@ export const defaultBranch = (repo: string, token: string) =>
     return decoded.default_branch;
   });
 
-// The commit a ref names; no ref is the default branch.
 export const resolveCommit = (source: SourceSpec, token: string) =>
   Effect.gen(function* () {
     const response = yield* Effect.tryPromise({
@@ -112,7 +106,6 @@ export const resolveCommit = (source: SourceSpec, token: string) =>
     return text.trim();
   });
 
-// The repository's tarball at a commit, as GitHub streams it; the reader enforces the size cap.
 export const tarball = (repo: string, commit: string, token: string) =>
   Effect.gen(function* () {
     const response = yield* Effect.tryPromise({
@@ -129,15 +122,12 @@ export const tarball = (repo: string, commit: string, token: string) =>
     return response.body;
   });
 
-// The two GitHub origins a session's traffic may reach, and how each takes the token.
 const origins = { git: "https://github.com", api: "https://api.github.com" } as const;
 
 export type ProxyRequest = {
   target: keyof typeof origins;
-  // Path and query on the target's origin.
   path: string;
   method: string;
-  // Already stripped of the caller's credentials and hop-by-hop headers.
   headers: ReadonlyArray<readonly [string, string]>;
   body: ReadableStream<Uint8Array> | ArrayBuffer | null;
 };
@@ -154,7 +144,6 @@ export const proxy = (input: ProxyRequest, token: string) =>
       try: () => new URL(`${origin}${input.path}`),
       catch: () => new ProxyFailure({ reason: "bad_path" }),
     });
-    // A path like `@host/` or `//host/` must not move the token to another origin.
     if (url.origin !== origin || !input.path.startsWith("/"))
       return yield* new ProxyFailure({ reason: "bad_path" });
     const sent = new Headers(input.headers.map(([name, value]) => [name, value]));
@@ -168,7 +157,6 @@ export const proxy = (input: ProxyRequest, token: string) =>
           method: input.method,
           headers: sent,
           body: input.body,
-          // The API's redirects go back to gh as they came; git follows them.
           ...(input.target === "api" ? { redirect: "manual" as const } : {}),
         }),
       catch: () => new ProxyFailure({ reason: "unreachable" }),

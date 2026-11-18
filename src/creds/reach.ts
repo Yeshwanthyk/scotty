@@ -76,7 +76,6 @@ const filterMessage = (rpc: typeof Rpc.Type, policy: typeof ToolPolicy.Type) => 
   };
 };
 
-// SSE callbacks are a stream host boundary. Keep event IDs and comments; rewrite only MCP data.
 const mcpStream = (
   body: ReadableStream<Uint8Array<ArrayBuffer>>,
   message: (value: typeof Rpc.Type) => unknown,
@@ -119,7 +118,6 @@ const mcpStream = (
           }
         },
         flush() {
-          // SSE dispatches only complete events. An incomplete tail must not bypass filtering.
           buffer = "";
           lines = [];
         },

@@ -1,6 +1,3 @@
-// A streaming reader for the tar files GitHub serves: ustar headers, pax `path` records and GNU
-// long names. It never holds a whole file; each wanted file's bytes go to the sink `open` returns.
-
 type Sink = (bytes: Uint8Array) => void;
 type Open = (path: string) => Sink | undefined;
 
@@ -19,7 +16,6 @@ const octal = (header: Uint8Array, start: number, length: number) => {
   return text === "" ? 0 : parseInt(text, 8);
 };
 
-// `<length> path=<value>\n` records; only `path` matters here.
 const paxPath = (body: Uint8Array) => {
   const text = decoder.decode(body);
   let at = 0;
@@ -37,7 +33,6 @@ const paxPath = (body: Uint8Array) => {
 
 export function tarReader(open: Open) {
   let buffer: Uint8Array = new Uint8Array(0);
-  // Bytes left in the current entry's body, padding included, and how many of them are file.
   let left = 0;
   let size = 0;
   let sink: Sink | undefined;
@@ -58,14 +53,12 @@ export function tarReader(open: Open) {
     const path = longPath ?? (prefix === "" ? name : `${prefix}/${name}`);
     sink = undefined;
     meta = undefined;
-    // x: pax record for the next entry, g: global pax record, L: GNU long name.
     if (type === 0x78 || type === 0x67 || type === 0x4c) {
       if (size > 1024 * 1024) throw new Error("tar: oversized metadata");
       meta = { type, parts: [] };
       return;
     }
     longPath = undefined;
-    // 0 or NUL: regular file, 7: contiguous file.
     if (type === 0x30 || type === 0 || type === 0x37) sink = open(path);
   };
 
@@ -119,7 +112,6 @@ export function tarReader(open: Open) {
       }
       take();
     },
-    // A tar that stops mid-entry is truncated.
     end() {
       if (left > 0 || (buffer.length > 0 && !ended)) throw new Error("tar: truncated");
     },

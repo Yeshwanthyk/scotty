@@ -29,7 +29,6 @@ export const openLog = (storage: Cloudflare.DurableObjectState["Service"]) =>
       current = fold(current, event);
     }
     const mutex = yield* Semaphore.make(1);
-    // Uninterruptible, so a replaced watcher can't stop between the insert and the fold.
     const append = (draft: Draft, src: string) =>
       mutex.withPermits(1)(
         Effect.uninterruptible(
@@ -43,8 +42,6 @@ export const openLog = (storage: Cloudflare.DurableObjectState["Service"]) =>
             yield* sql`INSERT INTO events (seq, at, src, kind, op, data) VALUES (${event.seq}, ${event.at}, ${event.src}, ${event.kind}, ${event.kind}, ${JSON.stringify(event)})`;
             history.push(event);
             current = fold(current, event);
-            // Taken before any incident row, so a violation never swallows the command (a stop's
-            // destroy most of all).
             const issued = command(current, event);
             for (const violation of invariants(current)) {
               const incident = yield* Schema.decodeUnknownEffect(SessionEvent)({

@@ -1,8 +1,3 @@
-// Fails when vendor/ is not the source of the installed Effect and Alchemy.
-// Every dependency in package.json that a vendored repo publishes must have the
-// same version in package.json, in node_modules and in the vendored checkout,
-// the checkout must be the commit this repository records and the release tag of
-// that version, and AGENTS.md and docs/design.md must name the same versions.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -41,7 +36,7 @@ const readManifest = (path: string) =>
 const git = (args: ReadonlyArray<string>) =>
   execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
 
-const packageDirs = (dir: string): ReadonlyArray<string> =>
+const packageDirs: (dir: string) => ReadonlyArray<string> = (dir) =>
   readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     if (!entry.isDirectory() || entry.name === "node_modules" || entry.name.startsWith(".")) {
       return [];

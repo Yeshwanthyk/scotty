@@ -7,9 +7,6 @@ import { failure } from "./client.js";
 
 const Hostname = Schema.String.check(Schema.isPattern(/^[a-z0-9-]+(\.[a-z0-9-]+)+$/));
 
-// What `scotty init` asked, so `deploy` and every other command need no environment.
-// Names and ids only; never a token. Scotty is served at https://<host>, previews at
-// https://<port>-<id>.<domain>. Resource names start with `scotty-<stage>`.
 export const Config = Schema.Struct({
   stage: Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,19}$/)),
   email: Schema.String.check(Schema.isPattern(/^[^@\s]+@[^@\s]+$/)),
@@ -19,7 +16,6 @@ export const Config = Schema.Struct({
   host: Hostname,
   codex: Schema.optional(AgentSettings),
   claude: Schema.optional(AgentSettings),
-  // How many sessions may run at once; absent means 20. A full cap stops the next start.
   maxRunning: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   mcpOAuthTest: Schema.optionalKey(
     Schema.Struct({
@@ -29,12 +25,10 @@ export const Config = Schema.Struct({
 });
 export type Config = typeof Config.Type;
 
-// SCOTTY_CONFIG points at another file, so a test can set up a stage beside the owner's.
 export const configPath =
   process.env.SCOTTY_CONFIG ??
   join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "scotty", "config.json");
 
-// Undefined when there is no config yet; a config that doesn't decode is a setup error.
 export const readConfig = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   if (!(yield* fs.exists(configPath))) return undefined;
