@@ -1,13 +1,13 @@
 import { PromptImages, promptFits } from "../../protocol/prompt.js";
 import { AgentDefaults, stageAgentDefaults } from "../session/agents/agent-settings.js";
-import { Config, Effect, Exit, Result, Schema, Stream } from "effect";
+import { Config, Effect, Exit, Option, Result, Schema, Stream } from "effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import type * as Cloudflare from "@alchemy.run/cloudflare";
 import { AgentKind } from "../session/events.js";
-import { PlaceKind, Size } from "../places/place.js";
+import { KeyedPlace, PlaceKind, placeKeys, Size } from "../places/place.js";
 import { maxSearch, SearchQuery } from "../session/search.js";
 import { repoStats, StatsWindow } from "../session/stats.js";
 import {
@@ -113,10 +113,6 @@ const ClaudeToken = Schema.Struct({
   token: Schema.String.check(Schema.isPattern(/^sk-ant-oat01-[A-Za-z0-9_-]{20,300}$/)),
 });
 const claudeHint = "scotty login claude";
-const DaytonaKey = Schema.Struct({
-  key: Schema.String.check(Schema.isPattern(/^dtn_[A-Za-z0-9_-]{20,200}$/)),
-});
-const daytonaHint = "scotty login daytona";
 const Instructions = Schema.Struct({
   text: Schema.String.check(
     Schema.makeFilter((text) => new TextEncoder().encode(text).byteLength <= maxInstructionBytes, {
@@ -222,18 +218,25 @@ export function apiHandler(
       if (HttpServerResponse.isHttpServerResponse(body)) return body;
       return yield* HttpServerResponse.json(yield* credential.setClaude(body.token));
     }
-    if (url.pathname === "/api/credentials/daytona" && request.method === "GET")
-      return yield* HttpServerResponse.json(yield* credential.daytonaStatus());
-    if (url.pathname === "/api/credentials/daytona" && request.method === "POST") {
-      const body = yield* Schema.decodeUnknownEffect(DaytonaKey)(yield* request.json).pipe(
+    const keyed = Schema.decodeUnknownOption(KeyedPlace)(
+      /^\/api\/credentials\/([a-z]+)$/.exec(url.pathname)?.[1],
+    );
+    if (Option.isSome(keyed) && request.method === "GET")
+      return yield* HttpServerResponse.json(yield* credential.placeKeyStatus(keyed.value));
+    if (Option.isSome(keyed) && request.method === "POST") {
+      const kind = keyed.value;
+      const hint = `scotty login ${kind}`;
+      const body = yield* Schema.decodeUnknownEffect(
+        Schema.Struct({ key: Schema.String.check(Schema.isPattern(placeKeys[kind].pattern)) }),
+      )(yield* request.json).pipe(
         Effect.catchTag("SchemaError", () =>
-          bad("Expected a Daytona API key (dtn_…)", 400, daytonaHint),
+          bad(`Expected a ${kind} API key from ${placeKeys[kind].site}`, 400, hint),
         ),
       );
       if (HttpServerResponse.isHttpServerResponse(body)) return body;
-      const result = yield* credential.setDaytona(body.key);
+      const result = yield* credential.setPlaceKey(kind, body.key);
       if (result.status === "refused")
-        return yield* bad(`Daytona answered HTTP ${result.httpStatus}`, 400, daytonaHint);
+        return yield* bad(`${kind} answered HTTP ${result.httpStatus}`, 400, hint);
       return yield* HttpServerResponse.json(result);
     }
     if (url.pathname === "/api/version" && request.method === "GET")

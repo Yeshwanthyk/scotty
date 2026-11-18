@@ -1,11 +1,10 @@
 import { sameImages, type PromptImage } from "../../protocol/prompt.js";
-import { cloudflarePlace } from "../places/cloudflare.js";
-import { daytonaPlace } from "../places/daytona.js";
+import { makePlaces } from "../places/index.js";
 import {
   defaultPlace,
   type Exit as MachineExit,
-  type Place,
   PlaceFailed,
+  placeCatalog,
   type PlaceKind,
   type Size,
 } from "../places/place.js";
@@ -107,21 +106,18 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
       const id = () => log.state.created?.branch.slice("scotty/".length) ?? "";
       const context = yield* Effect.context<RuntimeContext | Cloudflare.DurableObjectState>();
 
-      const rawSnapshot: unknown = env["SCOTTY_DAYTONA_SNAPSHOT"];
-      const rawStage: unknown = env["ALCHEMY_STAGE"];
-      const places = {
-        cloudflare: cloudflarePlace(container, storage.raw.exports),
-        daytona: daytonaPlace({
-          key: (op) =>
-            credentials
-              .getByName("owner")
-              .daytonaKey()
-              .pipe(Effect.mapError(() => new PlaceFailed({ op }))),
-          snapshot: typeof rawSnapshot === "string" && rawSnapshot !== "" ? rawSnapshot : undefined,
-          stage: typeof rawStage === "string" ? rawStage : "",
-        }),
-      } satisfies Record<typeof PlaceKind.Type, Place>;
-      const where = () => places[log.state.created?.place ?? defaultPlace];
+      const places = makePlaces({
+        container,
+        exports: storage.raw.exports,
+        env,
+        key: (kind, op) =>
+          credentials
+            .getByName("owner")
+            .placeKey(kind)
+            .pipe(Effect.mapError(() => new PlaceFailed({ op }))),
+      });
+      const kind = () => log.state.created?.place ?? defaultPlace;
+      const where = () => places[kind()];
       class NoMachine extends Schema.TaggedError<NoMachine>()("NoMachine", {}) {}
       const port = (n: number) =>
         Effect.gen(function* () {
@@ -561,7 +557,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 instructions,
                 skills: installed.flat(),
                 ...(restored && action.resume !== undefined ? { resume: action.resume } : {}),
-                ...(where().tunnel ? { tunnel: true } : {}),
+                ...(placeCatalog[kind()].tunnel ? { tunnel: true } : {}),
               };
               if (current(action.gen)) link.send(message);
               return;
@@ -711,13 +707,12 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           const props = tunnelProps(head.host, connections);
           const loopback: unknown = Reflect.get(storage.raw.exports, "default");
           if (props === undefined || !isLoopbackFetch(loopback)) return undefined;
-          const scheme = head.host === "api.github.com" ? "https" : "http";
           const fetcher = loopback({ props: { session: id(), repo: created.repo, ...props } });
           const headers = new Headers();
           for (const [name, value] of head.headers) headers.append(name, value);
           headers.set("host", head.host);
           return yield* Effect.tryPromise(() =>
-            fetcher.fetch(`${scheme}://${head.host}${head.path}`, {
+            fetcher.fetch(`http://${head.host}${head.path}`, {
               method: head.method,
               headers,
               body,

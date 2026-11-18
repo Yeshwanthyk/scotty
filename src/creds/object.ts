@@ -34,7 +34,8 @@ import { searchText } from "../session/search.js";
 import { AgentKind } from "../session/events.js";
 import { AgentDefaults } from "../session/agents/agent-settings.js";
 import { Size } from "../places/place.js";
-import { daytonaApi } from "../places/daytona.js";
+import { placeKeyChecks } from "../places/index.js";
+import type { KeyedPlace } from "../places/place.js";
 import { repoKey } from "../http/start.js";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
@@ -79,7 +80,7 @@ const GitHubUser = Schema.Struct({
   name: Schema.NullOr(Schema.String),
   email: Schema.NullOr(Schema.String),
 });
-const DaytonaRow = Schema.Struct({ api_key: Schema.String });
+const PlaceKeyRow = Schema.Struct({ api_key: Schema.String });
 const ClaudeRow = Schema.Struct({
   token: Schema.String,
   expires_at: Schema.Number,
@@ -193,7 +194,8 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       yield* sql`CREATE TABLE IF NOT EXISTS device (id INTEGER PRIMARY KEY CHECK (id = 1), device_auth_id TEXT NOT NULL, user_code TEXT NOT NULL, interval INTEGER NOT NULL, expires_at INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS github (id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, login TEXT NOT NULL, name TEXT NOT NULL, email TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS claude (id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, expires_at INTEGER NOT NULL)`;
-      yield* sql`CREATE TABLE IF NOT EXISTS daytona (id INTEGER PRIMARY KEY CHECK (id = 1), api_key TEXT NOT NULL)`;
+      yield* sql`DROP TABLE IF EXISTS daytona`;
+      yield* sql`CREATE TABLE IF NOT EXISTS place_keys (kind TEXT PRIMARY KEY, api_key TEXT NOT NULL)`;
       yield* sql`DROP TABLE IF EXISTS skills`;
       yield* sql`CREATE TABLE IF NOT EXISTS skill_sources (id TEXT PRIMARY KEY, repo TEXT NOT NULL, path TEXT NOT NULL, ref TEXT, commit_sha TEXT NOT NULL, size INTEGER NOT NULL, fetched INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS source_skills (name TEXT PRIMARY KEY, source TEXT NOT NULL, description TEXT NOT NULL, manual INTEGER NOT NULL, enabled INTEGER NOT NULL, digest TEXT NOT NULL)`;
@@ -1209,31 +1211,25 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                   },
             ),
           ),
-        setDaytona: (apiKey: string) =>
+        setPlaceKey: (kind: typeof KeyedPlace.Type, apiKey: string) =>
           Effect.gen(function* () {
-            const response = yield* Effect.tryPromise(() =>
-              fetch(`${daytonaApi}/sandbox?labels=${encodeURIComponent("{}")}`, {
-                headers: { authorization: `Bearer ${apiKey}` },
-              }),
-            );
-            yield* Effect.promise(() => response.body?.cancel() ?? Promise.resolve());
-            if (response.status !== 200)
-              return { status: "refused" as const, httpStatus: response.status };
-            yield* sql`INSERT OR REPLACE INTO daytona (id, api_key) VALUES (1, ${apiKey})`;
+            const httpStatus = yield* placeKeyChecks[kind](apiKey);
+            if (httpStatus !== 200) return { status: "refused" as const, httpStatus };
+            yield* sql`INSERT OR REPLACE INTO place_keys (kind, api_key) VALUES (${kind}, ${apiKey})`;
             return { status: "set" as const };
           }),
-        daytonaStatus: () =>
-          sql`SELECT 1 AS present FROM daytona WHERE id = 1`.pipe(
+        placeKeyStatus: (kind: typeof KeyedPlace.Type) =>
+          sql`SELECT 1 AS present FROM place_keys WHERE kind = ${kind}`.pipe(
             Effect.map((rows) => ({
               status: rows.length > 0 ? ("set" as const) : ("missing" as const),
             })),
           ),
-        daytonaKey: () =>
+        placeKey: (kind: typeof KeyedPlace.Type) =>
           Effect.gen(function* () {
-            const row = (yield* sql`SELECT api_key FROM daytona WHERE id = 1`)[0];
+            const row = (yield* sql`SELECT api_key FROM place_keys WHERE kind = ${kind}`)[0];
             if (row === undefined)
-              return yield* new CredentialStoreError({ message: "Daytona API key missing" });
-            return (yield* Schema.decodeUnknownEffect(DaytonaRow)(row)).api_key;
+              return yield* new CredentialStoreError({ message: `${kind} API key missing` });
+            return (yield* Schema.decodeUnknownEffect(PlaceKeyRow)(row)).api_key;
           }),
         claudeToken: () =>
           Effect.gen(function* () {

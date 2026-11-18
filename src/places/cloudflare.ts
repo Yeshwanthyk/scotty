@@ -79,7 +79,6 @@ export const cloudflarePlace: (container: cf.Container, exports: object) => Plac
     remove: () => destroy("remove"),
     status: () => Effect.sync(() => (container.running ? "running" : "gone")),
     port: (_handle, port) => Effect.succeed(tcpPort(container, port)),
-    tunnel: false,
     watch: () =>
       Effect.tryPromise({
         try: () => container.setInactivityTimeout(inactivityTimeout),

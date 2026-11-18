@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import { daytonaApi, daytonaShapes, daytonaSnapshot } from "../src/places/daytona.js";
-import { daytonaSizes } from "../src/places/place.js";
+import { placeCatalog } from "../src/places/place.js";
 
 export class DaytonaError extends Schema.TaggedError<DaytonaError>()("DaytonaError", {
   message: Schema.String,
@@ -59,7 +59,7 @@ export const snapshotPrefix = (stage: string, image: string) => {
 /** Makes the stage's snapshot for each size Daytona offers from `image`, and waits until each is active. */
 export const ensureSnapshots = (key: string, prefix: string, image: string) =>
   Effect.forEach(
-    daytonaSizes,
+    placeCatalog.daytona.sizes,
     (size) =>
       Effect.gen(function* () {
         const shape = daytonaShapes[size];

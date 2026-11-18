@@ -2,11 +2,12 @@ import { Effect, Exit, Option, Schema, Stream } from "effect";
 import { Argument, Command } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { BunServices } from "@effect/platform-bun";
+import { KeyedPlace, placeKeys } from "../../src/places/place.js";
 import { version } from "../../src/version.js";
 import {
   ChatGptStatus,
   ClaudeStatus,
-  DaytonaStatus,
+  PlaceKeyStatus,
   GitHubStatus,
   List,
   Polled,
@@ -221,18 +222,19 @@ export const saveGitHub = (api: Api) =>
     });
   });
 
-export const saveDaytona = (api: Api) =>
+export const savePlaceKey = (api: Api, kind: typeof KeyedPlace.Type) =>
   Effect.gen(function* () {
+    const { env, site } = placeKeys[kind];
     const piped = process.stdin.isTTY ? "" : (yield* readStdin).trim();
-    const key = piped === "" ? (process.env["DAYTONA_API_KEY"] ?? "").trim() : piped;
+    const key = piped === "" ? (process.env[env] ?? "").trim() : piped;
     if (key === "")
       return yield* failure(
         "signin",
-        "No Daytona API key: nothing was piped and DAYTONA_API_KEY is unset",
-        "Make a key at app.daytona.io, then: scotty login daytona < file",
+        `No ${kind} API key: nothing was piped and ${env} is unset`,
+        `Make a key at ${site}, then: scotty login ${kind} < file`,
         3,
       );
-    return yield* api("/api/credentials/daytona", DaytonaStatus, {
+    return yield* api(`/api/credentials/${kind}`, PlaceKeyStatus, {
       method: "POST",
       body: { key },
     });
@@ -360,13 +362,14 @@ const loginChatGpt = (api: Api) =>
 
 export { until };
 
-const loginTo = (account: "chatgpt" | "github" | "claude" | "daytona") =>
+const accounts = ["chatgpt", "github", "claude", ...KeyedPlace.literals] as const;
+const loginTo = (account: (typeof accounts)[number]) =>
   Effect.gen(function* () {
     const api = yield* withClient;
     if (account === "chatgpt") return yield* loginChatGpt(api);
-    if (account === "daytona") {
-      const saved = yield* saveDaytona(api);
-      return yield* output(saved, `${green("✓")} Daytona API key saved`);
+    if (account !== "github" && account !== "claude") {
+      const saved = yield* savePlaceKey(api, account);
+      return yield* output(saved, `${green("✓")} ${account} API key saved`);
     }
     if (account === "claude") {
       const saved = yield* saveClaude(api);
@@ -381,6 +384,6 @@ const loginTo = (account: "chatgpt" | "github" | "claude" | "daytona") =>
 
 export const login = Command.make(
   "login",
-  { account: Argument.Literals("account", ["chatgpt", "github", "claude", "daytona"]) },
+  { account: Argument.Literals("account", accounts) },
   ({ account }) => loginTo(account),
 );

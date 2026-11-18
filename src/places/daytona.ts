@@ -1,6 +1,6 @@
 import { Effect, Schedule, Schema } from "effect";
 import {
-  type daytonaSizes,
+  type placeCatalog,
   PlaceFailed,
   PortFailed,
   type Place,
@@ -15,7 +15,20 @@ export const daytonaApi = "https://app.daytona.io/api";
 export const daytonaShapes = {
   "standard-1": { cpu: 1, memory: 4, disk: 8 },
   "standard-2": { cpu: 2, memory: 8, disk: 10 },
-} satisfies Record<(typeof daytonaSizes)[number], { cpu: number; memory: number; disk: number }>;
+} satisfies Record<
+  (typeof placeCatalog.daytona.sizes)[number],
+  { cpu: number; memory: number; disk: number }
+>;
+/** The HTTP status Daytona answers a sandbox listing made with `key`. */
+export const checkDaytonaKey = (key: string) =>
+  Effect.tryPromise(() =>
+    fetch(`${daytonaApi}/sandbox?labels=${encodeURIComponent("{}")}`, {
+      headers: { authorization: `Bearer ${key}` },
+    }),
+  ).pipe(
+    Effect.tap((response) => Effect.promise(() => response.body?.cancel() ?? Promise.resolve())),
+    Effect.map((response) => response.status),
+  );
 export const daytonaSnapshot = (prefix: string, size: typeof Size.Type) => `${prefix}-${size}`;
 
 const Sandbox = Schema.Struct({
@@ -56,9 +69,12 @@ const label = (session: string, gen: number) => ({ "scotty-session": `${session}
  */
 export const daytonaPlace: (input: {
   readonly key: (op: Op) => Effect.Effect<string, PlaceFailed>;
-  readonly snapshot: string | undefined;
-  readonly stage: string;
-}) => Place = ({ key, snapshot, stage }) => {
+  readonly env: Readonly<Record<string, unknown>>;
+}) => Place = ({ key, env }) => {
+  const rawSnapshot = env["SCOTTY_DAYTONA_SNAPSHOT"];
+  const snapshot = typeof rawSnapshot === "string" && rawSnapshot !== "" ? rawSnapshot : undefined;
+  const rawStage = env["ALCHEMY_STAGE"];
+  const stage = typeof rawStage === "string" ? rawStage : "";
   const previews = new Map<string, typeof Preview.Type>();
   const forget = (handle: string) => {
     for (const cached of previews.keys())
@@ -263,6 +279,5 @@ export const daytonaPlace: (input: {
         ),
       ),
     port: (handle, port) => Effect.succeed(proxied(handle, port)),
-    tunnel: true,
   };
 };

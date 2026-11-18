@@ -2,7 +2,15 @@
 import { BunServices } from "@effect/platform-bun";
 import { Console, Effect } from "effect";
 import { Command, CliError } from "effect/cli";
-import { defaultPlace, defaultSize, PlaceKind, Size, sizeShape } from "../src/places/place.js";
+import {
+  defaultPlace,
+  defaultSize,
+  KeyedPlace,
+  PlaceKind,
+  placeKeys,
+  Size,
+  sizeShape,
+} from "../src/places/place.js";
 import { version } from "../src/version.js";
 import { CliFailure, failure } from "./client.js";
 import { bold, dim, json, red } from "./commands/common.js";
@@ -25,7 +33,7 @@ ${bold("Setup")}
   deploy                          Deploy this Scotty to the configured stage (--image ref)
   teardown                        Remove the stage from Cloudflare and its config
   doctor                          Check setup, sign-ins and the deployment
-  login <account>                 Sign in to chatgpt, github, claude or daytona
+  login <account>                 Sign in to chatgpt, github, claude or a keyed place
   skill                           Print the guide to hand your own agent
 
 ${bold("Sessions")}
@@ -103,11 +111,11 @@ matches. A later deploy without --image goes back to Scotty's image.`,
   doctor: `Usage: scotty doctor
 Check the config, Cloudflare Access, the Worker and each sign-in, and print the fix for each problem.
 Exits 3 when something required is missing.`,
-  login: `Usage: scotty login chatgpt|github|claude|daytona
+  login: `Usage: scotty login chatgpt|github|claude|${KeyedPlace.literals.join("|")}
 chatgpt   Opens the device-code page and waits for you to enter the code.
 github    Saves the token from \`gh auth token\`, or from stdin when piped.
 claude    Runs \`claude setup-token\` and saves the token, or reads it from stdin when piped.
-daytona   Saves the API key from stdin, or from DAYTONA_API_KEY, for sessions run --on daytona.
+${KeyedPlace.literals.map((kind) => `${kind.padEnd(10)}Saves the API key from stdin, or from ${placeKeys[kind].env}, for sessions run --on ${kind}.`).join("\n")}
 Example: gh auth token | scotty login github`,
   new: `Usage: scotty new <owner/repo | https://github.com/owner/repo> <prompt> [--agent codex|claude] [--size name] [--on place] [--key key] [--session-key key]
 Start a session with Codex (the default) or Claude. --key makes retries idempotent.

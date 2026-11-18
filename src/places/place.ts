@@ -5,21 +5,37 @@ export const defaultPlace: typeof PlaceKind.Type = "cloudflare";
 export const Size = Schema.Literals(["standard-1", "standard-2", "standard-3", "standard-4"]);
 export const defaultSize: typeof Size.Type = "standard-1";
 
-export const daytonaSizes = [
-  "standard-1",
-  "standard-2",
-] as const satisfies readonly (typeof Size.Type)[];
-/** The sizes each place can make, smallest first. */
-export const placeSizes: Record<typeof PlaceKind.Type, readonly (typeof Size.Type)[]> = {
-  cloudflare: Size.literals,
-  daytona: daytonaSizes,
-};
+/**
+ * What is fixed about each place: the sizes it makes, smallest first, and whether the supervisor
+ * reaches the Worker through its own socket because the place can't intercept the machine's
+ * requests to `github.internal` and the rest.
+ */
+export const placeCatalog = {
+  cloudflare: { sizes: Size.literals, tunnel: false },
+  daytona: { sizes: ["standard-1", "standard-2"], tunnel: true },
+} as const satisfies Record<
+  typeof PlaceKind.Type,
+  { readonly sizes: readonly (typeof Size.Type)[]; readonly tunnel: boolean }
+>;
+
+/** The places that act with an API key the owner saves with `scotty login <place>`. */
+export const KeyedPlace = Schema.Literals(["daytona"]);
+export const placeKeys = {
+  daytona: {
+    env: "DAYTONA_API_KEY",
+    pattern: /^dtn_[A-Za-z0-9_-]{20,200}$/,
+    site: "app.daytona.io",
+  },
+} as const satisfies Record<
+  typeof KeyedPlace.Type & typeof PlaceKind.Type,
+  { readonly env: string; readonly pattern: RegExp; readonly site: string }
+>;
 /** The largest size `place` makes that is no bigger than `size`. */
 export const fitSize: (place: typeof PlaceKind.Type, size: typeof Size.Type) => typeof Size.Type = (
   place,
   size,
 ) => {
-  const offered = placeSizes[place];
+  const offered: readonly (typeof Size.Type)[] = placeCatalog[place].sizes;
   const wanted = Size.literals.indexOf(size);
   return offered.findLast((item) => Size.literals.indexOf(item) <= wanted) ?? offered[0] ?? size;
 };
@@ -155,9 +171,4 @@ export interface Place {
    * when the machine can't be watched yet); the inner one waits for the exit.
    */
   readonly watch?: (handle: Handle) => Effect.Effect<Effect.Effect<Exit>, PlaceFailed>;
-  /**
-   * True where the place can't intercept the machine's requests to `github.internal` and the
-   * rest; the supervisor then sends them to the Session DO over its own socket.
-   */
-  readonly tunnel: boolean;
 }
