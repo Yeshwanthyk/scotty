@@ -1,7 +1,7 @@
 import { Effect, Option, Schema, Stream } from "effect";
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import type * as Cloudflare from "alchemy/Cloudflare";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import type * as Cloudflare from "@alchemy.run/cloudflare";
 import { connectionName, type DeliveryReason, Key } from "../creds/connections.js";
 import type CredsObject from "../creds/object.js";
 import { AgentKind } from "../session/events.js";

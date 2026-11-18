@@ -1,6 +1,6 @@
 import { BunSocket } from "@effect/platform-bun";
 import { Effect } from "effect";
-import { WebSocketConstructor, type WebSocketLike } from "effect/unstable/socket/Socket";
+import { WebSocketConstructor, type WebSocketLike } from "effect/socket/Socket";
 import { access, CliFailure, client, Created, failure, target, View } from "../cli/client.js";
 import { agent, prompt, sessionAgent } from "./lib/agent.js";
 import { fixtureRepo } from "../protocol/supervisor.js";

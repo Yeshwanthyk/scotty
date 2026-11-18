@@ -1,6 +1,6 @@
 import { BunServices } from "@effect/platform-bun";
 import { Effect, FileSystem } from "effect";
-import { Argument, Command } from "effect/unstable/cli";
+import { Argument, Command } from "effect/cli";
 import { Saved, failure } from "../client.js";
 import { dim, green, output, readStdin, withClient } from "./common.js";
 

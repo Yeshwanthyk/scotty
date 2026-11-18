@@ -1,5 +1,5 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { Effect, Schema, Semaphore } from "effect";
 import { command } from "./commands.js";
 import { SessionEvent } from "./events.js";

@@ -4,10 +4,10 @@ import * as Zones from "@distilled.cloud/cloudflare/zones";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
 export const cloudflareLayer = (token: Redacted.Redacted<string>) =>
-  Layer.merge(fromApiToken({ apiToken: Redacted.value(token) }), FetchHttpClient.layer);
+  Layer.merge(fromApiToken({ apiToken: token }), FetchHttpClient.layer);
 export type CloudflareLayer = ReturnType<typeof cloudflareLayer>;
 
 export const accounts = Accounts.listAccounts.items({}).pipe(

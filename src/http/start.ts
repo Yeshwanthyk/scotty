@@ -1,6 +1,6 @@
 import type { PromptImage } from "../../protocol/prompt.js";
 import { Effect, Schema } from "effect";
-import type * as Cloudflare from "alchemy/Cloudflare";
+import type * as Cloudflare from "@alchemy.run/cloudflare";
 import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import { fixtureRepo } from "../../protocol/supervisor.js";

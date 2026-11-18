@@ -1,6 +1,6 @@
 import { BunServices } from "@effect/platform-bun";
 import { Effect, Schema, Stdio, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { List, type Session, Url, access, client, failure, target } from "../client.js";
 import { readConfig } from "../config.js";
 

@@ -27,7 +27,7 @@
         "paths": [
           {
             "name": "@effect/platform",
-            "message": "Platform APIs come from effect and effect/unstable/*."
+            "message": "Platform APIs come from effect and effect/*."
           },
           {
             "name": "@effect/schema",
@@ -41,7 +41,7 @@
         "patterns": [
           {
             "group": ["@effect/platform/*", "@effect/schema/*", "@cloudflare/sandbox/*"],
-            "message": "Platform and Schema APIs come from effect and effect/unstable/*."
+            "message": "Platform and Schema APIs come from effect and effect/*."
           }
         ]
       }

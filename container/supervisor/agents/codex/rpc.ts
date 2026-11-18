@@ -1,6 +1,6 @@
 import { Cause, Deferred, Effect, Exit, Option, Queue, Result, Schema, Stream } from "effect";
 import type { PlatformError } from "effect";
-import type { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChildProcessSpawner } from "effect/process";
 import { AgentError, type AgentOutput } from "../../runner.js";
 import { serverReply } from "./server-requests.js";
 import { decodeRpcLine, RpcFailure } from "./rpc-schema.js";

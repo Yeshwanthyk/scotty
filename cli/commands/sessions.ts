@@ -1,5 +1,5 @@
 import { Effect, Option } from "effect";
-import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/cli";
 import { Size } from "../../src/places/place.js";
 import { titleFrom } from "../../src/session/title.js";
 import { Conversation, Created, List, Log, View } from "../client.js";

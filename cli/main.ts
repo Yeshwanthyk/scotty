@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { BunServices } from "@effect/platform-bun";
 import { Console, Effect } from "effect";
-import { Command, CliError } from "effect/unstable/cli";
+import { Command, CliError } from "effect/cli";
 import { defaultSize, Size, sizeShape } from "../src/places/place.js";
 import { version } from "../src/version.js";
 import { CliFailure, failure } from "./client.js";

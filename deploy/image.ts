@@ -138,11 +138,11 @@ export const copyImage = (raw: {
 
     const credential = yield* Containers.createContainerRegistryCredentials({
       accountId: account,
-      registryId: "registry.cloudflare.com",
+      domain: "registry.cloudflare.com",
       permissions: ["pull", "push"],
       expirationMinutes: 10,
     }).pipe(Effect.mapError(() => error("registry credential")));
-    const username = credential.username ?? credential.user;
+    const username = credential.username;
     if (!username) return yield* error("registry username");
     const target = registry(
       `https://registry.cloudflare.com/v2/${account}/${repository}`,
