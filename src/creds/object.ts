@@ -20,12 +20,20 @@ import {
   McpSignIn,
 } from "./connections.js";
 import { authorizeMcp, refreshMcp, StoredMcpOAuth } from "./mcp-oauth.js";
-import { defaultBranch, proxy, type ProxyRequest, resolveCommit, tarball } from "./github.js";
+import {
+  defaultBranch,
+  repositories,
+  proxy,
+  type ProxyRequest,
+  resolveCommit,
+  tarball,
+} from "./github.js";
 import type { SourceSpec } from "../settings/skills.js";
 import { isLoopback } from "../loopback.js";
 import { egressTokenHash, newEgressToken } from "../egress/token.js";
 import { searchText } from "../session/search.js";
 import { AgentKind } from "../session/events.js";
+import { AgentDefaults } from "../session/agents/agent-settings.js";
 import { Size } from "../places/place.js";
 import { repoKey } from "../http/start.js";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
@@ -144,6 +152,7 @@ const FireRow = Schema.Struct({
   session: Schema.NullOr(Schema.String),
   scripted: Schema.Number,
 });
+const AgentDefaultsRow = Schema.Struct({ data: Schema.fromJsonString(AgentDefaults) });
 const SizeRow = Schema.Struct({ size: Size });
 const RepoSettings = Schema.Array(Schema.Struct({ repo: Schema.String, size: Size }));
 const RunAnswer = Schema.Struct({
@@ -226,6 +235,8 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       // tokens reach. A token is kept only as its hash, and only for that gen.
       yield* sql`CREATE TABLE IF NOT EXISTS egress_gens (session TEXT PRIMARY KEY, gen INTEGER NOT NULL, stopped INTEGER NOT NULL, repo TEXT NOT NULL, connections TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS egress_tokens (hash TEXT PRIMARY KEY, session TEXT NOT NULL, gen INTEGER NOT NULL)`;
+
+      yield* sql`CREATE TABLE IF NOT EXISTS agent_defaults (id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL)`;
 
       const refreshing = new Map<
         string,
@@ -1098,6 +1109,17 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             ? sql`DELETE FROM repo_settings WHERE repo = ${repoKey(repo)}`
             : sql`INSERT OR REPLACE INTO repo_settings (repo, size) VALUES (${repoKey(repo)}, ${size})`
           ).pipe(Effect.asVoid),
+        agentDefaults: () =>
+          Effect.gen(function* () {
+            const rows = yield* sql`SELECT data FROM agent_defaults WHERE id = 1`;
+            return rows[0] === undefined
+              ? null
+              : (yield* Schema.decodeUnknownEffect(AgentDefaultsRow)(rows[0])).data;
+          }),
+        setAgentDefaults: (defaults: typeof AgentDefaults.Type) =>
+          sql`INSERT OR REPLACE INTO agent_defaults (id, data) VALUES (1, ${JSON.stringify(defaults)})`.pipe(
+            Effect.asVoid,
+          ),
         claudeStyle: () =>
           sql`SELECT skill FROM claude_style`.pipe(
             Effect.flatMap((rows) =>
@@ -1307,6 +1329,17 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             return { token: row.token };
           }),
         // GitHub requests that need the token run here; only their answers leave this object.
+        repositories: (page: number, perPage: number) =>
+          Effect.gen(function* () {
+            const row = yield* gitHub;
+            if (row === null) return { status: "signed-out" as const };
+            return yield* repositories(page, perPage, row.token).pipe(
+              Effect.map((catalog) => ({ status: "found" as const, ...catalog })),
+              Effect.catchTag("RepositoryFailure", (error) =>
+                Effect.succeed({ status: "failed" as const, message: error.message }),
+              ),
+            );
+          }),
         defaultBranch: (repo: string) =>
           Effect.gen(function* () {
             const row = yield* gitHub;

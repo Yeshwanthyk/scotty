@@ -1,4 +1,5 @@
 import { BunServices } from "@effect/platform-bun";
+import { uptime } from "node:process";
 import { Effect, Option, Queue, Result, Schema } from "effect";
 import {
   supervisorAuthHeader,
@@ -89,6 +90,9 @@ export const serve = async (
     stopping = true;
     void Effect.runPromise(host.shutdown).finally(() => exit(0));
   });
+  const processOriginEstimate = Date.now() - uptime() * 1000;
+  let listeningAt = 0;
+  let listeningAgeMs = 0;
   const queue = Effect.runSync(Queue.unbounded<Event>());
   // The consumer alone owns wire state and the active peer; Bun callbacks only enqueue.
   let wire = initialWire(crypto.randomUUID(), workspace);
@@ -130,7 +134,12 @@ export const serve = async (
   const processEvent = (event: Event): Effect.Effect<void> => {
     switch (event.type) {
       case "open": {
-        const result = dial(wire, event.peer.data.gen, event.peer.data.after);
+        const result = dial(wire, event.peer.data.gen, event.peer.data.after, {
+          processOriginEstimate,
+          listeningAt,
+          listeningAgeMs,
+          helloAgeMs: uptime() * 1000,
+        });
         if (result.conflict) {
           event.peer.close();
           return Effect.void;
@@ -317,6 +326,8 @@ export const serve = async (
       },
     },
   });
+  listeningAt = Date.now();
+  listeningAgeMs = uptime() * 1000;
   return (value: Output, gen?: number) =>
     enqueue({ type: "output", output: value, ...(gen === undefined ? {} : { gen }) });
 };

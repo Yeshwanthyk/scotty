@@ -1,3 +1,5 @@
+import { PromptImages, promptFits } from "../../protocol/prompt.js";
+import { AgentDefaults, stageAgentDefaults } from "../session/agents/agent-settings.js";
 import { Config, Effect, Exit, Result, Schema, Stream } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
@@ -35,12 +37,23 @@ import {
   type SourceSpec,
 } from "../settings/skills.js";
 
+const CatalogQuery = Schema.Struct({
+  page: Schema.NumberFromString.check(
+    Schema.isInt(),
+    Schema.isBetween({ minimum: 1, maximum: 1000000 }),
+  ),
+  perPage: Schema.NumberFromString.check(
+    Schema.isInt(),
+    Schema.isBetween({ minimum: 1, maximum: 100 }),
+  ),
+});
 const Create = Schema.Struct({
   title: Schema.String.check(Schema.isMinLength(1)),
   repo: Repo,
   prompt: Prompt,
   // Where the container runs; absent, the default place.
   place: Schema.optional(PlaceKind),
+  images: Schema.optionalKey(PromptImages),
   agent: Schema.optional(AgentKind),
   size: Schema.optional(Size),
   // The agent's scripted stand-in, for e2e: no ChatGPT, Claude or GitHub sign-in needed.
@@ -51,7 +64,11 @@ const Create = Schema.Struct({
   idleAfter: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 10_000, maximum: 600_000 })),
   ),
-});
+}).check(
+  Schema.makeFilter(({ prompt, images }) => promptFits(prompt, images), {
+    expected: "text and images fitting within 1 MB encoded",
+  }),
+);
 const Callback = Schema.Union([
   Schema.Struct({
     state: Schema.String.check(Schema.isPattern(/^[a-f0-9-]{36}$/)),
@@ -83,9 +100,14 @@ export const RequestId = Schema.String.check(
 const decodeRequestId = Schema.decodeUnknownEffect(RequestId);
 const Steer = Schema.Struct({
   text: Prompt,
+  images: Schema.optionalKey(PromptImages),
   turn: Schema.String,
   req: Schema.optional(RequestId),
-});
+}).check(
+  Schema.makeFilter(({ text, images }) => promptFits(text, images), {
+    expected: "text and images fitting within 1 MB encoded",
+  }),
+);
 const Interrupt = Schema.Struct({ turn: Schema.String, req: Schema.optional(RequestId) });
 const Resume = Schema.fromJsonString(Schema.Struct({ size: Schema.optionalKey(Size) }));
 const path =
@@ -207,6 +229,20 @@ export function apiHandler(
     }
     if (url.pathname === "/api/version" && request.method === "GET")
       return yield* HttpServerResponse.json({ version });
+    if (url.pathname === "/api/settings/agents" && request.method === "GET")
+      return yield* HttpServerResponse.json(
+        yield* stageAgentDefaults(yield* credential.agentDefaults()),
+      );
+    if (url.pathname === "/api/settings/agents" && request.method === "PUT") {
+      const body = yield* Schema.decodeUnknownEffect(AgentDefaults)(yield* request.json).pipe(
+        Effect.catchTag("SchemaError", () =>
+          bad("Expected a default agent, model and effort for Codex and Claude"),
+        ),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
+      yield* credential.setAgentDefaults(body);
+      return yield* HttpServerResponse.json(body);
+    }
     if (url.pathname === "/api/settings" && request.method === "GET") {
       const [instructions, sources, claudeStyle, running] = yield* Effect.all(
         [
@@ -246,6 +282,22 @@ export function apiHandler(
       if (!(yield* credential.setClaudeStyle(body.skill)))
         return yield* bad(`No skill named ${body.skill}`, 404);
       return yield* HttpServerResponse.json({ claudeStyle: body.skill });
+    }
+    if (url.pathname === "/api/repositories" && request.method === "GET") {
+      const query = yield* Schema.decodeUnknownEffect(CatalogQuery)({
+        page: url.searchParams.get("page") ?? "1",
+        perPage: url.searchParams.get("perPage") ?? "100",
+      }).pipe(
+        Effect.catchTag("SchemaError", () =>
+          bad("Expected page >= 1 and perPage between 1 and 100"),
+        ),
+      );
+      if (HttpServerResponse.isHttpServerResponse(query)) return query;
+      const result = yield* credential.repositories(query.page, query.perPage);
+      if (result.status === "signed-out")
+        return yield* bad("Add a GitHub token to browse repositories", 400, githubHint);
+      if (result.status === "failed") return yield* bad(result.message, 502, githubHint);
+      return yield* HttpServerResponse.json({ repos: result.repos, nextPage: result.nextPage });
     }
     if (url.pathname === "/api/repos" && request.method === "GET")
       return yield* HttpServerResponse.json({ repos: yield* credential.repoSettings() });
@@ -568,8 +620,9 @@ export function apiHandler(
       const started = yield* startSession(sessions, credential, {
         repo: body.repo,
         prompt: body.prompt,
+        images: body.images ?? [],
         title: body.title,
-        agent: body.agent ?? "codex",
+        agent: body.agent ?? (yield* stageAgentDefaults(yield* credential.agentDefaults())).agent,
         ...(body.place === undefined ? {} : { place: body.place }),
         ...(body.size === undefined ? {} : { size: body.size }),
         ...(body.scripted === true ? { scripted: true } : {}),
@@ -766,14 +819,16 @@ export function apiHandler(
         Effect.catchTag("SchemaError", (error) => bad(error.message)),
       );
       if (HttpServerResponse.isHttpServerResponse(body)) return body;
-      return yield* HttpServerResponse.json(
-        yield* stub.request({
-          kind: "prompt",
-          req: body.req ?? retry,
-          turn: body.turn,
-          text: body.text,
-        }),
-      );
+      const result = yield* stub.request({
+        kind: "prompt",
+        req: body.req ?? retry,
+        turn: body.turn,
+        text: body.text,
+        images: body.images ?? [],
+      });
+      return result.status === "conflict"
+        ? yield* bad("Request id already used for a different prompt", 409)
+        : yield* HttpServerResponse.json(result);
     }
     if (request.method === "POST" && subpath === "interrupt") {
       const retry = yield* idempotencyKey(request.headers["idempotency-key"]);

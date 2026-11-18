@@ -75,7 +75,7 @@ A handler never awaits an outside party while changing state. An outside action 
 | Event                                   | Fields                                                                                                                                                                                                                                                                                                                                             |
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `created`                               | `repo, baseBranch, branch, title, prompt, req?, image, agentKind, place?, size?, origin?, scripted?, idleAfter?` (`req`: the first prompt's request id; `size`: the container size, absent = `standard-1`; `branch` is the work branch `scotty/<session id>`, chosen at create time; `idleAfter` shortens the idle window, scripted sessions only) |
-| `container.start` / `sup.hello`         | `gen` / `gen, n, version, boot` (`boot` identifies one supervisor process)                                                                                                                                                                                                                                                                         |
+| `container.start` / `sup.hello`         | `gen` / `gen, n, version, boot, startup?` (`boot` identifies one supervisor process)                                                                                                                                                                                                                                                               |
 | `workspace.ready`                       | `gen, n, base, branch, commit, ms?, retried?` (`ms`: clone/fetch time; `retried`: git's error for each retried GitHub failure)                                                                                                                                                                                                                     |
 | `agent.ready`                           | `gen, n, agentKind, session` (the agent's session id)                                                                                                                                                                                                                                                                                              |
 | `prompt.requested` / `prompt.delivered` | `req, turn, text, images` / `gen, n, req` (delivery settles a prompt or interrupt; client `req` cannot start with `initial:`)                                                                                                                                                                                                                      |
@@ -613,7 +613,7 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
 - **Output:** one JSON value on stdout with `--json`, or when stdout is not a terminal. In a terminal the output is readable text, coloured unless `NO_COLOR` is set. Progress and prompts go to stderr.
 - **Errors:** `{"error":{"code","message","hint"}}` on stdout in JSON mode, otherwise `✗ message` and `→ hint` on stderr. The exit code is 1 for a request or agent failure, 2 for bad usage, and 3 when setup is missing (no address, no Access login, not signed in). `hint` is the exact command that fixes it.
 - **Target:** `SCOTTY_URL`, else `https://<host>` from the CLI config (`~/.config/scotty/config.json`: stage, email, accountId, domain, zoneId, host); never derived. Access comes through `cloudflared access token` at run time; the CLI stores no token.
-- **Agent stage settings:** optional `codex` and `claude`, each `{ model: string, effort: "low" | "medium" | "high" | "xhigh" | "max" }`, in that config. Codex defaults to `gpt-5.5` and `medium`, Claude to `claude-opus-5-5` and `medium`. Deploy passes them as plain Worker vars; scripted sessions are unaffected. A test stage sets cheaper models here, so `--real` e2e uses them without naming a model in test code.
+- **Agent stage settings:** optional `codex` and `claude`, each `{ model: string, effort: "low" | "medium" | "high" | "xhigh" | "max" }`, in that config. Codex defaults to `gpt-6.1-sol` and `medium`, Claude to `claude-opus-5-5` and `medium`. Deploy passes them as plain Worker vars; scripted sessions are unaffected. A test stage sets cheaper models here, so `--real` e2e uses them without naming a model in test code.
 - **Ids:** a session id can be given as its first 4+ characters; an ambiguous or unknown prefix is an error.
 - **Setup:** `doctor` checks the address, Access, the Worker's version, and each sign-in (ChatGPT, GitHub, Claude), with each account's expiry and the fix for each problem. `login chatgpt` runs the device code: it prints the code, opens the page, and polls. `login github` saves the token from stdin, or from `gh auth token`. `login claude` runs `claude setup-token` and saves the token, or reads it from stdin.
 - **Sessions:** `new <owner/repo> <prompt> [--agent codex|claude] [--key k]` is idempotent on `--key` and uses the repository's default branch. `ls` lists sessions. `read <id> [--last N] [--role user|assistant]` prints the session state and recent messages (default 1, maximum 500; role filtering precedes the limit; empty assistant text is omitted). `log <id>` prints the raw events. There is no `watch`: callers choose when to read again. `steer <id> <text>` and `interrupt <id>` take an optional `--req` for retries. `stop`, `resume`, `open [id]` and `hatch <id> <port>` do what they say. `rm <id…>` deletes stopped or failed sessions with their saves and files, after resolving every id; a running one answers 409 with the hint `scotty stop <id>`.
@@ -624,6 +624,7 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
 ## Deploy
 
 - **Image:** CI builds the default image from `container/Dockerfile` (supervisor included), publishes it to a public OCI registry, and records its linux/amd64 manifest digest; `container/image.digest` pins it, and each CLI release embeds it. The image's `scotty.supervisor` label is `supervisorVersion` from `protocol/supervisor.ts`. No local Docker is needed to deploy or develop.
+- **Build cache:** the manually dispatched `image` workflow imports/exports GitHub Actions v2 cache through pinned `docker/build-push-action`, scoped to `scotty-image-linux-amd64`, with `mode=max` to retain intermediate build stages. Dockerfile instructions, copied inputs and resolved base-image identity invalidate dependent layers; rotate the scope or delete the cache for an intentional full rebuild. GitHub permits reads from the current/default/base branch, so a feature-branch cache does not seed main; eviction or a cold branch causes rebuilding. Workflow concurrency serializes writes per branch. The cache is an optimization, never the deployed image authority: `container/image.digest` remains authoritative. No credentials are passed to Dockerfile steps; Docker Hub login stays on the runner. Cache contents are repository-readable build outputs, not a secret store. [Docker cache documentation](https://docs.docker.com/build/cache/backends/gha/).
 - **Release:** `deploy/release.ts` bundles `deploy/entry.js` (Alchemy's generated Worker entry, reading the stage from the Worker's `ALCHEMY_STAGE`, so one bundle serves every stage) with rolldown and `@alchemy.run/cloudflare-runtime`, copies `ui/dist` without its prerender `server/`, and writes `release.json` (`version`, the pinned image, `supervisor`). Alchemy stays the Worker's runtime; it no longer deploys.
 - **Binary:** `deploy/compile.ts` builds a release, packs it with `skills/scotty/SKILL.md` into `dist/release.pack` (paths to base64), and compiles `cli/binary.ts` for darwin-arm64, darwin-x64 and linux-x64 with the pack embedded (`with { type: "file" }`); macOS binaries are ad-hoc signed. The binary unpacks the release into a temporary folder for a deploy. From a checkout the CLI builds the release in a `bun` subprocess instead, so the binary never bundles rolldown. `.github/workflows/release.yml` runs on a tag `v<version>`: it publishes the three tarballs, `checksums.txt` and `install.sh` on GitHub Releases, then writes `Formula/scotty.rb` (depends on `cloudflared`) to the tap `Yeshwanthyk/homebrew-scotty`.
 - **Deployer:** `scotty deploy` takes that release and `deploy/deployer.ts` applies it with direct Cloudflare API calls: it copies the pinned image into `registry.cloudflare.com/<account>/scotty@sha256:<digest>` over the OCI distribution API with short-lived registry credentials (verifying every digest, streaming blobs, never logging or persisting the credential), then makes or updates the bucket, the web app's assets (wrangler's hash: the first 32 hex of sha256(bytes + extension), so unchanged files are skipped), the Worker (both DOs, one migration `v1` only when its `SessionObject` namespace is new, the container entry with its image map, `SCOTTY_MAX_RUNNING`, and the plain-text vars Alchemy's runtime reads: `ALCHEMY_PHASE=runtime`, `ALCHEMY_WORKER_NAME`, `ALCHEMY_STACK_NAME`, `ALCHEMY_STAGE`, `ALCHEMY_CLOUDFLARE_ACCOUNT_ID`), the container app (Containers below), the custom domain, the Access applications (owner email only, one sign-in lasting 30 days; `/hooks/*` bypassed; `/mcp` with Managed OAuth), the preview record and the route. Proved on `main` by a spike (2026-09-29).
@@ -647,7 +648,7 @@ What the first `track` deploy showed (2026-10-19) is marked as such; the rest fo
 - **The running cap is Scotty's.** The policy has no `max_instances`, so `maxRunning` in the stage config (default 20) reaches the Worker as `SCOTTY_MAX_RUNNING`. The Creds DO is the only writer of its `running` table: `claim(id, max)` takes a slot unless `max` are taken (a session that holds one keeps it, under a new token), `release(id)` gives it back, and `forget` drops it with the session. The `container.start` perform claims before it starts the container; every stop, sleep and failure ends in the `destroy` command, which releases. A refused claim first asks each claimed session's DO (`GET /running` on its own namespace: 204 or 410) and drops the claims of sessions that no longer run, matching their tokens so a newer claim survives, then claims once more. Still refused, it appends `container.stopped {reason: "cap", max}`, so the Session DO never waits on another party while changing state. `GET /api/settings` returns `running` and `maxRunning`; `scotty doctor` and Settings → Running show them.
 - **Size per session.** One Schema, `Size` in `src/places/place.ts` (`standard-1` to `standard-4`, owner 2026-10-19), decodes a size wherever it enters: the API create, MCP `new_session`, `scotty new --size`, an automation (and so a blueprint's), and the hook payload. `lite`, `basic`, custom and unknown names are refused there (a 400 naming `["size"]`, an MCP tool error, CLI exit 2). `created.size` is the size a session is made at. A create that names none leaves it absent, and the fold alone resolves an absent size to `defaultSize` (`standard-1`, beside `Size`), as for logs written before sizes. Every `container.start` passes the fold's size (`State.size`) as `instance`. A size applies only when a session is made: only the call that carries `create` sends one, and a retried create naming a size other than the created one is a conflict, even after a resize. A keyed start that reaches an existing session, and an automation `wake`, send none, so they reach a session of any size. An automation run snapshots its definition's size at receipt, as it does `repo` and `agent`, so a retried fire asks for the same size even if the automation was edited or removed since. The size lives in the Creds DO's `run_sizes (id, size)` table, pruned with `runs`, so existing Creds DOs need no rebuild.
 - **Resume at another size.** `resume.requested.size` is the only way a session's size changes. The fold applies it when it applies the resume (the session is stopped, or failed retryably): `State.size` becomes it, and the next `container.start` uses it. A resume with no size, and a steer that resumes, keep the current size. The workspace comes back from the R2 save as on any resume. A running container never changes size, so `resizeConflict` in the fold, checked by the Session DO before it appends anything, refuses a resume that names another size while the session is not resumable: `POST /api/sessions/:id/resume {size}` answers 409 `{code: "running", message: "Stop the session before changing its size", hint: "scotty stop <id>"}`, MCP `resume_session` a tool error, `scotty resume --size` exit 1. A session that failed for good can never resume, so a resize of one is 409 `{code: "failed", message: "The session failed and can't be resumed; start a new one", hint: "scotty read <id>"}` instead. The same size, or none, is an ordinary resume. The body is optional; a bare `POST` keeps the size.
-- **Size per repository.** The Creds DO's `repo_settings (repo, size)` holds a repository's defaults, keyed by `repoKey`, the lowercased `owner/repo` (GitHub names ignore case); it is the record later per-repo settings join. `GET /api/repos` answers `{repos: [{repo, size}]}`, `PUT /api/repos/:owner/:repo {size}` sets one and `DELETE` clears it; the path is decoded with the session create's `Repo` and the body with `Size`, so a bad size or a malformed repository is a 400. The CLI is `scotty repo set <owner/repo> --size <name>|--default` and `scotty repo ls`; the UI is Settings → Repositories. The new-session page sends a size only when the owner picked one by hand for the repository in the field; otherwise it names none and the Worker resolves it, and the picker only shows the default and says where it came from (or that the defaults did not load), so a late or failed load never overrides a default or changes a retry's key. **Resolution:** the request's size, then the automation's (which reaches `startSession` as the request's), then the repository default, then `standard-1`. `startSession` reads the default only when the request names no size and only on the path that makes a session, and sends it to the Session DO as `create.repoSize`, apart from `size`. The DO writes `size ?? repoSize` into `created`, so changing a default never changes a session already made, and `startStep` still compares only an explicit `size`: a retried create naming no size is the same session after the default changed, not a conflict. Every create path (API, MCP, the UI, hooks, automations and so blueprints) goes through `startSession`.
+- **Size per repository.** The Creds DO's `repo_settings (repo, size)` holds a repository's defaults, keyed by `repoKey`, the lowercased `owner/repo` (GitHub names ignore case); it is the record later per-repo settings join. `GET /api/repos` answers `{repos: [{repo, size}]}`, `PUT /api/repos/:owner/:repo {size}` sets one and `DELETE` clears it; the path is decoded with the session create's `Repo` and the body with `Size`, so a bad size or a malformed repository is a 400. The CLI is `scotty repo set <owner/repo> --size <name>|--default` and `scotty repo ls`; the UI is Settings → Repositories. The new-session page sends a size only when the owner picked one by hand for the draft; otherwise it names none and the Worker resolves it, and the picker only shows the default and says where it came from (or that the defaults did not load), so a late or failed load never overrides a default or changes a retry's key. **Resolution:** the request's size, then the automation's (which reaches `startSession` as the request's), then the repository default, then `standard-1`. `startSession` reads the default only when the request names no size and only on the path that makes a session, and sends it to the Session DO as `create.repoSize`, apart from `size`. The DO writes `size ?? repoSize` into `created`, so changing a default never changes a session already made, and `startStep` still compares only an explicit `size`: a retried create naming no size is the same session after the default changed, not a conflict. Every create path (API, MCP, the UI, hooks, automations and so blueprints) goes through `startSession`.
 - **What each size reads** (on `track`, 2026-10-20, a scripted session running `nproc; grep MemTotal /proc/meminfo; df -h /`). These match Cloudflare's published 1/2, 1, 2 and 4 vCPU and 4, 6, 8 and 12 GiB; the kernel reports about 0.2 GiB more. `e2e sizes` asserts `nproc` exactly and `MemTotal` within 5% for every size it starts.
 
   | Size         | `nproc` | `MemTotal` (kB) | Root fs |
@@ -669,7 +670,7 @@ What the first `track` deploy showed (2026-10-19) is marked as such; the rest fo
 ## Tests
 
 - **Unit:** only `fold.ts`, covering its invariants, plus replays of real event logs saved as files. Each fixed bug adds its log.
-- **End to end,** against a real deployment. Sessions in these tests use `fixtureRepo` (`_scotty/fixture`, `main`): a bare repository at `/opt/scotty/fixture.git` in the image, cloned without GitHub; the API skips the GitHub lookup for it. Only `github` and `hatch-env` reach GitHub.
+- **End to end,** against a real deployment. Sessions in these tests use `fixtureRepo` (`_scotty/fixture`, `main`): a bare repository at `/opt/scotty/fixture.git` in the image, cloned without GitHub; the API skips the GitHub lookup for it. `github`, `hatch-env`, `settings` and `repositories` reach GitHub.
   - Sessions run the agent's scripted stand-in (`container/scripted/`, `scotty-codex-scripted` and `scotty-claude-scripted` in the image) unless a test is given `--real`; the create body's `scripted: true` asks for it. A stand-in speaks its agent's wire protocol (Codex's app-server JSON-RPC, Claude Code's stream-json for the Agent SDK), so the supervisor's adapters run unchanged, and it reads each prompt as a script: `run <command>`, `sleep <s>`, `say <text>` with `{{out}}` (the last output) and `{{recall}}` (the first prompt, read back from the saved session file, so it proves resume). Its messages are typed against the pinned SDK and against `codex-protocol.ts`, generated by `npm run protocol:codex` from the pinned Codex, so typecheck fails when they drift. A spec gives shapes, not ordering or timing; a real session that shows otherwise becomes a replay. `github`, `hatch-env` and `files` test what the agent does, so they run the real Codex.
   1. `deploy` → create → Codex answers → `steer` → `interrupt`.
   2. The real token never appears in the container (scan env, files and process arguments).
@@ -696,3 +697,269 @@ What the first `track` deploy showed (2026-10-19) is marked as such; the rest fo
   - For the build: identity goes in loopback props, as for `github.internal`; the path must be under `/api/` for the Worker to see it; the client inside the container uses plain HTTP.
   - Not covered: real MCP servers and SDKs, OAuth, Last-Event-ID replay, concurrent sessions, container restarts during a stream, large bodies.
 - **Runner tunnel (spike, 2026-09-30, partly answered).** A DO held an outbound WebSocket through a cloudflared quick tunnel to a laptop for about 24 minutes: 291 messages, no gaps, and resending with `?after=N` worked. When cloudflared paused, the socket closed with 1006 about 5 s later, dials failed with 530/1033 until it came back, then reconnected in about 100 ms. A hung origin made one reconnect take 23 s, so the runner link needs a 10 s dial timeout, a staleness check and backoff. HTTP through the tunnel: p50 45 ms, 5 MB in 217 ms. Not covered: a named tunnel and an Access service token; the API token lacks Account → Cloudflare Tunnel: Edit and Account → Access: Service Tokens: Edit.
+
+### New-session size selection
+
+An explicit size belongs to the draft session and survives repository edits and GitHub link pastes. Without an explicit choice, the repository default still applies.
+
+### Owner defaults and appearance
+
+Settings → Defaults saves `{agent, codex: {model, effort}, claude: {model, effort}}` through `GET/PUT /api/settings/agents`. The Creds DO owns the single SQLite `agent_defaults` row and Schema-decodes it on read. Saved choices override stage settings; without a saved row, the stage settings above apply. Invalid requests return 400 without changing the saved row. An omitted API agent uses the saved default; an explicit agent wins. Each agent start reads current model/effort, including a resume; a running agent keeps its configuration. Scripted agents keep their scripted model.
+
+New session loads the remote default before submission and preserves a choice made while it loads. Failed loading requires an explicit agent choice; an unavailable Claude sign-in is shown rather than silently switching agents. Settings leaves saved defaults untouched on load/save failure. Model names must be available to the signed-in account; Scotty validates their shape, not account availability.
+
+System / Light / Dark appearance is browser-only (`scotty.appearance` in localStorage). A head script applies `data-theme` before paint; System follows color-scheme changes, and the choice survives reload. No owner setting or session event stores appearance.
+
+### Images in prompts
+
+The composer accepts up to four images (chooser, paste or drop; source files up to 20 MB).
+It rasterizes the first frame at at most 1600 px on the longest edge, keeps lossless PNG
+when it fits, otherwise uses WebP at quality 0.9 and reduces dimensions until each encoded
+image is at most 170,000 characters. Alpha is preserved; animation and metadata are omitted.
+Preparation errors and failed sends retain the draft; previews can be removed before sending.
+
+`protocol/prompt.ts` owns `{mediaType, data}`: JPEG/PNG/WebP/GIF, base64 syntax,
+at most 220,000 characters each, four images, 700,000 characters total. Create and steer
+Schema-decode it. The Session DO records images in `created` and `prompt.requested`, folds
+them into requests, and sends the same payload on reconnect. Idempotency compares images as
+well as text. Existing logs without initial images or with steering `images: []` still decode.
+Codex receives image data URLs in `turn/start` and `turn/steer`; Claude receives base64 image
+blocks. Conversation snapshots render images from durable prompt requests.
+
+These bounds fit [Worker RPC](https://developers.cloudflare.com/workers/runtime-apis/rpc/)
+and [WebSocket](https://developers.cloudflare.com/workers/runtime-apis/websockets/) limits
+of 32 MiB, and the [DO SQLite row limit](https://developers.cloudflare.com/durable-objects/platform/limits/)
+of 8 MB (checked 2026-11-16). The supervisor also enforces a 1 MiB inbound frame cap. Create/steer therefore bound
+the serialized text and images to 1,000,000 bytes, leaving room for its command envelope;
+JSON escaping counts toward that bound. No separate upload service is needed. Conversation snapshots grow with retained prompts, as before.
+
+### Repository choices in New session
+
+The Repository combobox merges recent session repositories, configured size defaults and the
+stored GitHub account's accessible repositories. Search is local and case-insensitive; manual
+`owner/repo` and pasted GitHub URLs still work. Arrow keys choose an option, Enter selects,
+and Escape closes without changing the draft. The explicit size stays with the draft.
+
+`GET /api/repositories?page=1&perPage=100` returns `{repos: string[], nextPage: number|null}`.
+Schema bounds page to positive integers (at most 1,000,000) and perPage to 1–100. The Creds DO
+calls GitHub's authenticated `/user/repos` through Effect HttpClient and decodes full names;
+only names and continuation leave it. The picker follows every page, showing loading until
+complete and a failure message if any page fails; partial results never look complete. Recent
+and configured choices and manual entry remain usable during loading or errors. No catalog
+cache or persistent state is added. `/api/repos` keeps its saved-size settings contract.
+
+Proof: `e2e repositories` reads real GitHub pages with the stored account, follows the full
+catalog, and rejects malformed pagination. Browser verification covers search, keyboard,
+manual URL entry, mobile fit and session repository/size readback.
+
+### Startup stages and measured limits
+
+The supervisor emits `workspace.prepared` after clone/restore, instructions, skills and style
+installation, before constructing and starting the agent runner. The Session DO accepts it
+with the same generation/sequence rules as other supervisor output. It changes progress only:
+`workspace.ready` still means the runner is ready, releases queued prompts and clears the
+existing workspace deadline. Reconnect replays the prepared event; resume resets preparation.
+The UI shows container, workspace, agent initialization, then waiting for the first response.
+Agent initialization is no longer charged to workspace preparation, and a ready agent awaiting
+model output is no longer labelled as starting.
+
+On main at `768a243`, five sequential fresh scripted Codex sessions on 2026-11-16 used
+`_scotty/fixture`, `standard-1`, `say startup-ready`, no concurrent test sessions, and the
+existing deployed image. All five returned the expected completed answer; none failed.
+Times below are milliseconds from durable `container.start`, using server event timestamps,
+not client polling intervals. They exclude create-request latency and include prompt delivery
+and first answer. Each container was stopped after its run. Host load was 2.48 on 12 cores;
+the workload ran remotely. Placement and image-cache warmth were uncontrolled.
+
+| Session                          | Supervisor hello | Agent ready | Completed answer |
+| -------------------------------- | ---------------: | ----------: | ---------------: |
+| 058ccff37ff743a696f858d7ee5aefc3 |             1946 |        3440 |             3530 |
+| 137ca31d3382438288579fcd783d2a01 |             1548 |        3031 |             3132 |
+| a25871e8f92a47f0b6471d701b60f20d |              823 |        1669 |             1730 |
+| 8afa7ddd3cab4e00a010d0b9ddf71758 |             1516 |        3053 |             3173 |
+| cf5651ffe70d43fa88a8010419d1c5bc |              871 |        1647 |             1703 |
+
+Median completed answer: 3132 ms, range 1703–3530 ms (n=5).
+The saved startup-progress log has no workspace-prepared boundary; the new startup e2e
+requires it before readiness, delivery and a successful answer. The historical owner trace
+spent 64261 ms before hello and reached readiness at 70056 ms. This sample did not reproduce
+that long wait. Existing events cannot distinguish provider placement/image provisioning
+from socket dialing before hello. No root cause or latency improvement is established;
+these progress corrections do not claim a speedup, and no cache or infrastructure change
+is justified by these runs. `e2e startup` reports each boundary and checks the answer; `--real`
+runs one real-agent smoke test rather than treating model response time as a scripted benchmark.
+
+The follow-up after rolling out the progress image reproduced the long wait twice in five
+successful scripted starts (same fixture, size and prompt):
+
+| Session                          | Supervisor hello | Prepared | Agent ready | Completed answer |
+| -------------------------------- | ---------------: | -------: | ----------: | ---------------: |
+| 310f8a319bf5489b8aa4ae41571da628 |            53861 |    54374 |       54648 |            54700 |
+| e9f3399fcd9f48938537b37a7dc8b489 |              778 |     1388 |        1644 |             1699 |
+| 02d0b661fed14e069a1fc6e0efdc7f7c |            51521 |    52359 |       52819 |            52912 |
+| 4d50cd9697dd49829e93ff28138e9fe7 |              762 |     1312 |        1553 |             1612 |
+| 3e3272f3bb894ee396d854e45889c1f0 |             1300 |     1775 |        2059 |             2123 |
+
+Median answer 2123 ms, range 1612–54700 ms (n=5; zero failures or excluded runs).
+This was not an alternating controlled before/after benchmark: a new image had just rolled
+out, and provider placement/cache state was uncontrolled. It establishes variability and
+localizes the slow portion before hello; it does not establish a speedup or regression.
+`container.dial.started` now records when container-start setup has returned and dialing
+begins, without changing state, commands or deadlines. The interval before that event covers
+claim/configuration/interceptors/start; after it and before hello covers port/socket readiness
+and its existing retries. It prevents future pre-hello delays from being conflated with
+workspace preparation or model response time.
+
+With this additional boundary deployed, five further identical scripted starts passed, all
+with the expected completed answer and no invariant failures:
+
+| Session                          | Dial begins | Supervisor hello | Prepared | Agent ready | Completed answer |
+| -------------------------------- | ----------: | ---------------: | -------: | ----------: | ---------------: |
+| f3ccda7d9f9943c7b8001530cf6d0eaf |         113 |              751 |     1260 |        1514 |             1568 |
+| 1ba615f0bc5446ef85e76615220d182f |         123 |             1329 |     2012 |        2293 |             2357 |
+| c18ebe0d4e454a39924f0c5d2beb0437 |         125 |             1336 |     1959 |        2272 |             2338 |
+| 0fa64d7c9a38401c8e991c4880644d73 |         119 |             1293 |     2023 |        2496 |             2585 |
+| b74f873c7d124daaa778906ce7139d2e |         135 |              818 |     1381 |        1671 |             1742 |
+
+Median answer 2338 ms, range 1568–2585 ms (n=5; zero failures or exclusions).
+Start setup was 113–135 ms in these runs; the long stall did not recur with this probe.
+Consequently the slow runs still cannot be assigned specifically to setup or socket/provider
+readiness. The permanent boundary will distinguish them on the next occurrence. No latency
+optimization was made. Both a slow log and a log with the new boundaries are saved as replays.
+
+Deployment proof: `e2e core` passed create/answer, Worker redeploy/reconnect, steer, mid-turn
+steer and interruption. `e2e stop-resume` preserved the thread, marker file and deletion, then
+recovered from an agent crash. `e2e startup --agent claude --real` returned `startup-ready`
+with all boundaries ordered (one smoke run; 5737 ms to completed answer, not a benchmark).
+Real Codex browser session `fa2f5763472b45e7a4eb2cff8584a567` answered, resumed and answered
+again. At 375 px the observed active steps were container, workspace, agent, first response,
+with no horizontal overflow. Reloading during a resumed start completed normally. The
+screenshots show initialization and first-response waiting as distinct stages. All owned
+test sessions were stopped, and doctor passed.
+
+### Startup causal follow-up (2026-11-16)
+
+Read-only provider evidence strongly supports delayed runtime startup in the two slow
+post-rollout sessions above, without identifying image pull/unpack versus VM/network startup.
+Cloudflare GraphQL runtime rows each had count=1: session `310f8a319bf5489b8aa4ae41571da628`
+(ewr15) reported uptime 3900 ms at 06:11:30Z after durable start 06:10:33.333Z;
+`02d0b661fed14e069a1fc6e0efdc7f7c` (ord06) reported zero at 06:12:24Z and 3198 ms at
+06:12:27Z after start 06:11:34.209Z. Their hello delays were 53861/51521 ms, with
+correct answers 839/1391 ms later. Receipt time minus uptime suggests runtime birth near
+06:11:26.100Z/06:12:23.802Z; this is inferred, with unbounded ingestion delay, second-level
+receipt precision and unverified uptime semantics. It is not a lifecycle timestamp.
+Fast subsequent starts in each location are consistent with image availability, but a
+location contains multiple hosts and exposes no host cache-hit field. No application
+50-second backoff was found; the existing dial uses 10-second attempts and 500-ms spacing.
+
+OCI manifests for `70f2925f9f97e8d3b8fb1a9e1e2997ac5aead03487cd65f584b1441dde53e30c`
+and `aaf77437d718b67754380c73457fd7fa70b941df845244d417bdfece8805d001` had 14 layers
+each; eight changed, totaling 694108211 compressed descriptor bytes in the latter image.
+The unchanged tool-install instruction produced a new 573465137-byte layer without a
+persistent CI cache. This proves avoidable layer identity churn, not bytes pulled by
+Cloudflare or its contribution to elapsed startup. The workflow cache addresses that defect.
+
+Telemetry keys/query POSTs were denied (HTTP 403; keys code 10104,
+`no_access_to_workers_observability`); no credentials were refreshed or permissions changed.
+Missing evidence remains the ImagePulled, VMStarted, ContainerStarted and
+DurableObjectConnected timeline and image cache/preparation outcome for actors
+`257a1c54e7415fd2614ff01cf8618fc2a7d7aac45d4824f7a5d11189ac08a4af`
+(placement `6d90d7c2-e6e3-4858-bc5a-755c0418eecd`, ewr15) and
+`f254466c1b53e3207fdf2f09d70c7187fad02a371202258dd9b5f45a949037ba`
+(placement `90e11337-53db-4bcc-8e6c-7ea1d79e5d96`, ord06). Request those through permitted
+provider observability/support. Early ContainerStarted/listening would refute delayed runtime
+startup; early ImagePulled followed by late VMStarted would refute pulling as the dominant
+cost. If unavailable, capture per-dial result/error/elapsed and supervisor process-start/listen
+boundaries on one natural slow run. No user startup latency improvement is established.
+
+CI proof on source `ba678cdf90bff12c2b517977097c629b16838c11`: [cold build
+43819054782](https://github.com/Yeshwanthyk/scotty/actions/runs/43819054782) and [warm build
+43819218440](https://github.com/Yeshwanthyk/scotty/actions/runs/43819218440) both succeeded.
+The first reported zero cached steps; the second reported 18, including `[stage-1 2/10]`
+(tool installation), and imported the GitHub Actions cache. Both published manifest
+`sha256:a9328d35a9a0d1d8010b31e0c93d5fc7dc8990bc91684d5eabe00d22e5ceb09b`.
+OCI manifests fetched before/after the second publication matched in full, including all
+14 layer descriptors; the tool layer is 573465098 compressed bytes. This is one cold/warm
+pair proving reuse, not an alternating performance benchmark or startup latency result.
+The feature-branch cache is not visible to main; main's first build must seed its own cache.
+
+The pinned result was deployed to `scotty.yeshyendamuri.dev`; Cloudflare's instances API
+confirmed owned session `061fbd8b9d2946bb86420030542ea371` ran that exact image digest.
+`e2e core` passed create/answer, redeploy/reconnect, steering and interruption; doctor passed.
+The initial core start took 24981 ms from durable start to hello (one uncontrolled rollout
+observation, not a benchmark). No startup improvement is established. Both core sessions
+created for this change were stopped; preexisting sessions were not operated on.
+
+Startup diagnostics now carry optional hello timing metadata, so old images and saved logs
+remain readable. `helloAgeMs` and `listeningAgeMs` are monotonic process-uptime milliseconds;
+the latter is sampled immediately after `Bun.serve` returns. Their difference measures time
+from listening to hello construction on one clock. Durable start-to-hello minus hello process
+age localizes time before the supervisor process plus hello transit/receipt overhead; it does
+not depend on synchronizing the DO and container wall clocks. `processOriginEstimate` is
+container wall time minus process uptime, explicitly an estimate; `listeningAt` uses the
+container wall clock. Cross-host wall-clock offsets and clock-rate error are not calibrated.
+
+The Session DO records the first 16 initial-start dial attempts per generation and their
+results (connected, stale, failed, timeout or interrupted), with DO-clock elapsed milliseconds.
+It persists only the fixed outcome, never provider error text or response content. The attempt
+count survives DO reactivation through the log; later attempts and established-session redials
+are not instrumented. Existing timeouts, retry spacing, commands and fold deadlines remain
+unchanged. Diagnostic appends finish before/after the timed network effect and never hold the
+log's state-mutation permit across network work. They add bounded persistence overhead, so
+these observations cannot establish a latency speedup. Runtime uptime from the existing
+GraphQL rows can corroborate process age but retains the ingestion/semantics uncertainty
+above; this diagnostic path needs no inaccessible provider lifecycle telemetry. The current
+Container binding exposes running/image inspection, not runtime uptime; GraphQL runtime rows
+remain a separate corroborating observation.
+
+The bounded follow-up used the image built from `1f00c577fc078eaeef924bfca7c8f7ad4bbcefc1`
+in [CI run 43822641659](https://github.com/Yeshwanthyk/scotty/actions/runs/43822641659).
+It imported the persistent cache and reported 10 cached steps, including the heavy tool
+installation layer. The published/pinned digest is
+`sha256:ca43a23da7e5555c560722b0333e4bb050fba6cb3c25dfac9cb6461ac023586d`.
+
+Five scripted fixture starts on `standard-1`, sequential and without exclusions, all completed
+the expected answer: one core regression start (`ready 0`) followed by four startup assertions
+(`startup-ready`). The four-start harness was a scratch copy of `e2e/startup.ts` with only its
+run bound reduced from five to four and its relative helper import adjusted, so core counted
+toward the five-start budget. Core's redeploy/reconnect, steer, mid-turn steer and interrupt
+checks passed before the four-start probe; no deployments overlapped the probe.
+
+All columns below are milliseconds. Process/listen ages are monotonic within the supervisor;
+start-to-hello and answer time use the DO clock. Wall-clock origins were captured but were not
+used to infer the cause.
+
+| Session                                 | Setup | Hello | Process age at hello | Listening to hello | Completed answer |
+| --------------------------------------- | ----: | ----: | -------------------: | -----------------: | ---------------: |
+| 916ff3a1821e409cb240977c6c4634a0 (core) |   121 | 43767 |              844.121 |            300.367 |            44999 |
+| 66e1ec4cba424448b0de5fcfe6a27e8c        |   125 |  1451 |              849.969 |            289.879 |             2615 |
+| fd26c48132184d09be7ee9da495e03bf        |   109 | 52385 |              420.050 |            115.364 |            53185 |
+| c7f7482474424b349d1679f2fe9356fd        |   128 |  1383 |              775.685 |            302.924 |             2539 |
+| 8eecd433208145ba95ff7c98f1aa496c        |   126 |  1480 |              874.733 |            391.080 |             2652 |
+
+The two slow occurrences localize the dominant wait before the supervisor process: subtracting
+process age from durable start-to-hello leaves 42922.879/51964.950 ms, including hello
+transit/receipt overhead and uncalibrated relative clock-rate error. Their successful dials
+took 31/27 ms, with hello recorded at the same DO timestamp as each result. The supervisor
+had listened for only 300.367/115.364 ms. This strongly supports late process startup rather
+than an early listener waiting tens of seconds for connection. Each slow run first recorded
+four 10000-ms dial timeouts; the 52-second run then had a 9749-ms failed attempt and a
+27-ms successful attempt. Fixed outcome codes intentionally do not identify provider error
+causes. No application latency fix is justified by these observations.
+
+Saved raw replays are [the core run](../e2e/logs/2026-11-16-startup-diagnostics.jsonl) and
+[the 52-second startup run](../e2e/logs/2026-11-16-startup-diagnostics-probe.jsonl).
+The explicit replay compares state and commands with diagnostics removed, preserving source
+sequence numbers; deadlines remain identical. Old hello logs still decode. The four startup
+assertions checked timing presence/order, bounded paired attempts, completed turns and exact
+answer markers. Core and all probe sessions were stopped; no preexisting session was operated
+on. Doctor passed, and both deployed Worker module SHA-256 hashes matched the built release. Provider instances
+readback confirmed that all five post-image starts used the pinned digest (the slow core
+instance was in ord07; the slow startup probe was in ewr16).
+
+These are uncontrolled rollout observations, not an alternating before/after benchmark. The
+four identical startup prompts completed in 2539–53185 ms (n=4, zero failures); core used a
+different prompt and is not pooled into that answer-time range. The remaining causal gap is
+before process startup: provider image pull/unpack versus VM/runtime preparation. The denied
+lifecycle timeline is still needed to split those phases. No speedup is established, and
+sampling stopped at the authorized five starts.

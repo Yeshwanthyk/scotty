@@ -1,3 +1,4 @@
+import type { PromptImage } from "../../protocol/prompt.js";
 import { Schema, type Effect, type Stream, type Scope, type FileSystem } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
 import type { AgentConfig } from "../../protocol/supervisor.js";
@@ -30,6 +31,11 @@ export interface Runner {
     AgentError,
     Scope.Scope | FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
   >;
-  send(req: string, turn: string, text: string): Effect.Effect<Delivered, AgentError>;
+  send(
+    req: string,
+    turn: string,
+    text: string,
+    images?: readonly PromptImage[],
+  ): Effect.Effect<Delivered, AgentError>;
   interrupt(req: string): Effect.Effect<void, AgentError>;
 }

@@ -111,6 +111,7 @@ export class Controller {
           agent,
           message.agent.kind === "claude" ? message.agent.style : undefined,
         );
+        this.send({ type: "workspace_prepared" }, message.gen);
         const scope = yield* Scope.make();
         this.scope = scope;
         const runner = yield* agent.runner(workspace.dir);
@@ -245,7 +246,11 @@ export class Controller {
     return message.type === "prompt"
       ? this.request(
           req,
-          this.actions.run(this.runner.send(req, message.turn, message.text).pipe(Effect.asVoid)),
+          this.actions.run(
+            this.runner
+              .send(req, message.turn, message.text, message.images ?? [])
+              .pipe(Effect.asVoid),
+          ),
           message.gen,
         )
       : this.request(req, this.actions.run(this.runner.interrupt(req)), message.gen);

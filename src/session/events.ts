@@ -1,3 +1,5 @@
+import { StartupTiming } from "../../protocol/supervisor.js";
+import { PromptImages } from "../../protocol/prompt.js";
 import { Schema } from "effect";
 import { PlaceKind, Size } from "../places/place.js";
 
@@ -60,6 +62,7 @@ export const Origin = Schema.Union([
 export type Origin = typeof Origin.Type;
 
 export const SessionEvent = Schema.Union([
+  Schema.Struct({ ...fromSupervisor, kind: Schema.Literal("workspace.prepared") }),
   Schema.Struct({
     ...envelope,
     kind: Schema.Literal("created"),
@@ -69,6 +72,7 @@ export const SessionEvent = Schema.Union([
     branch: Schema.String,
     title: Schema.String,
     prompt: Schema.String,
+    images: Schema.optionalKey(PromptImages),
     // The first prompt's request id, so a retried create is known as one. Absent in logs
     // written before creators named it: those used `initial:<gen>`.
     req: Schema.optionalKey(ClientReq),
@@ -95,6 +99,25 @@ export const SessionEvent = Schema.Union([
   Schema.Struct({ ...envelope, kind: Schema.Literal("place.paused"), handle: Schema.String }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("place.gone"), handle: Schema.String }),
   Schema.Struct({
+    ...envelope,
+    kind: Schema.Literal("container.dial.started"),
+    gen: Schema.Natural,
+  }),
+  Schema.Struct({
+    ...envelope,
+    kind: Schema.Literal("container.dial.attempt"),
+    gen: Schema.Natural,
+    attempt: Schema.Natural.check(Schema.isBetween({ minimum: 1, maximum: 16 })),
+  }),
+  Schema.Struct({
+    ...envelope,
+    kind: Schema.Literal("container.dial.result"),
+    gen: Schema.Natural,
+    attempt: Schema.Natural.check(Schema.isBetween({ minimum: 1, maximum: 16 })),
+    elapsedMs: Schema.Finite,
+    outcome: Schema.Literals(["connected", "stale", "failed", "timeout", "interrupted"]),
+  }),
+  Schema.Struct({
     ...fromSupervisor,
     kind: Schema.Literal("sup.hello"),
     version: Schema.String,
@@ -110,6 +133,7 @@ export const SessionEvent = Schema.Union([
         thread: Schema.String,
       }),
     ),
+    startup: Schema.optionalKey(StartupTiming),
   }),
   Schema.Struct({
     ...fromSupervisor,
@@ -133,7 +157,7 @@ export const SessionEvent = Schema.Union([
     req: ClientReq,
     turn: Schema.String,
     text: Schema.String,
-    images: Schema.Array(Schema.String),
+    images: PromptImages,
   }),
   Schema.Struct({
     ...fromSupervisor,

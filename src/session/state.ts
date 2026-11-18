@@ -1,3 +1,4 @@
+import type { PromptImage } from "../../protocol/prompt.js";
 import type { SessionEvent, StopReason } from "./events.js";
 import type { Pending } from "./deadlines.js";
 import { defaultSize, type Size } from "../places/place.js";
@@ -9,7 +10,11 @@ type RequestBase = {
   readonly seq: number;
 };
 export type Request =
-  | (RequestBase & { readonly kind: "prompt"; readonly text: string })
+  | (RequestBase & {
+      readonly kind: "prompt";
+      readonly text: string;
+      readonly images?: readonly PromptImage[];
+    })
   | (RequestBase & { readonly kind: "interrupt" });
 type AttachedFile = Omit<
   Extract<SessionEvent, { kind: "file.attached" }>,
@@ -52,6 +57,7 @@ export type State = {
   readonly hello: boolean;
   readonly connected: boolean;
   readonly ready: boolean;
+  readonly prepared: boolean;
   readonly lastN: number;
   readonly lastAckN: number;
   readonly lastAckSeq: number;
@@ -115,6 +121,7 @@ export const initial: State = {
   hello: false,
   connected: false,
   ready: false,
+  prepared: false,
   lastN: 0,
   lastAckN: 0,
   lastAckSeq: 0,

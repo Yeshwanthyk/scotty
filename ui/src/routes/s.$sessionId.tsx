@@ -1,3 +1,4 @@
+import type { PromptImage } from "../../../protocol/prompt";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Size } from "../../../src/places/place";
@@ -79,6 +80,7 @@ function SessionView({ sessionId }: { sessionId: string }) {
   const [detail, setDetail] = useState<Session>();
   const [snapshot, setSnapshot] = useState<Conversation>();
   const [text, setText] = useState("");
+  const [images, setImages] = useState<readonly PromptImage[]>([]);
   // `error` is the last action's failure and `link` the socket's state, kept apart so a frame
   // doesn't wipe an error.
   const [error, setError] = useState("");
@@ -156,17 +158,29 @@ function SessionView({ sessionId }: { sessionId: string }) {
     setBusy(true);
     setError("");
     const turn = snapshot.currentTurn;
-    const submitted = action === "steer" ? text.trim() : undefined;
-    const input = JSON.stringify([action, turn, submitted]);
+    const submitted =
+      action === "steer" ? text.trim() || "Please look at the attached images." : undefined;
+    const input = JSON.stringify([action, turn, submitted, images]);
     if (attempt.current?.input !== input) attempt.current = { input, req: crypto.randomUUID() };
     try {
-      const result = await write(sessionId, action, turn, attempt.current.req, submitted);
+      const result = await write(
+        sessionId,
+        action,
+        turn,
+        attempt.current.req,
+        submitted,
+        action === "steer" ? images : [],
+      );
       attempt.current = undefined;
       setNote(
         action === "interrupt" ? "Stopping this turn…" : result === "pending" ? "Queued" : "",
       );
-      if (action === "steer" && (result === "pending" || result === "delivered"))
-        setText((current) => (current.trim() === submitted ? "" : current));
+      if (action === "steer" && (result === "pending" || result === "delivered")) {
+        setText((current) =>
+          current.trim() === submitted || current.trim() === "" ? "" : current,
+        );
+        setImages([]);
+      }
       if (working) transcript.jump();
       else transcript.expectTurn();
       refresh.current();
@@ -181,6 +195,10 @@ function SessionView({ sessionId }: { sessionId: string }) {
     setBusy(true);
     setError("");
     try {
+      // Stop asks first only while it would cut the agent's turn short.
+      if (action === "stop" && working) {
+        if (!window.confirm("Stop this session? The agent's current turn ends now.")) return;
+      }
       if (action === "delete") {
         if (!window.confirm("Delete this session and its history?")) return;
         await remove(sessionId);
@@ -231,11 +249,13 @@ function SessionView({ sessionId }: { sessionId: string }) {
   const agentStarting = waiting && (booted || turns.length === 1);
   const bootStep =
     detail?.authority.kind === "transitioning"
-      ? detail.authority.phase === "workspace"
-        ? 1
-        : 0
-      : agentStarting
+      ? detail.authority.phase === "agent"
         ? 2
+        : detail.authority.phase === "workspace"
+          ? 1
+          : 0
+      : agentStarting
+        ? 3
         : undefined;
   const mode: ThreadMode = bootStep !== undefined ? "booting" : working ? "live" : "dormant";
   const alert = error || linkNote[link];
@@ -289,14 +309,14 @@ function SessionView({ sessionId }: { sessionId: string }) {
             disabled={busy}
             items={[
               {
-                label: copied ? "Copied" : "Copy session ID",
+                label: copied ? "Copied" : "Copy Session ID",
                 stay: true,
                 onSelect: () => void copyText(sessionId).then(setCopied),
               },
               ...(resumable
                 ? [
                     {
-                      label: "Resume",
+                      label: "Resume Session",
                       onSelect: () => void act("resume"),
                     },
                   ]
@@ -304,7 +324,7 @@ function SessionView({ sessionId }: { sessionId: string }) {
               ...(running
                 ? [
                     {
-                      label: "Stop session",
+                      label: "Stop Session",
                       onSelect: () => void act("stop"),
                     },
                   ]
@@ -312,7 +332,7 @@ function SessionView({ sessionId }: { sessionId: string }) {
               ...(stopped || failed
                 ? [
                     {
-                      label: "Delete session",
+                      label: "Delete Session…",
                       tone: "danger" as const,
                       onSelect: () => void act("delete"),
                     },
@@ -375,6 +395,8 @@ function SessionView({ sessionId }: { sessionId: string }) {
             ) : null}
             <Composer
               label="Message"
+              images={images}
+              onImagesChange={setImages}
               value={text}
               onChange={setText}
               onSubmit={() => void send("steer")}

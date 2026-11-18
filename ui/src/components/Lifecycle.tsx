@@ -51,10 +51,15 @@ export function SleepsIn({ at }: { at: string }) {
   );
 }
 
-const bootSteps = ["Starting the container", "Preparing the workspace", "Starting the agent"];
+const bootSteps = [
+  "Starting the container",
+  "Preparing the workspace",
+  "Starting the agent",
+  "Waiting for the first response",
+];
 
 // Container, then workspace, then the agent's first output.
-export function BootSteps({ step }: { step: 0 | 1 | 2 }) {
+export function BootSteps({ step }: { step: 0 | 1 | 2 | 3 }) {
   return (
     <ol className="boot-steps" aria-label="Starting">
       {bootSteps.map((label, index) => {

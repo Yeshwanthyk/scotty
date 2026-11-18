@@ -3,6 +3,7 @@
 // the supervisor's Codex adapter uses, in the shapes Codex 0.157.1 sends them, and reads each
 // prompt as a script (script.ts). Its messages are typed by codex-protocol.ts, generated from
 // that Codex, so typecheck holds them to its protocol.
+import { createHash } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -50,7 +51,11 @@ const Message = Schema.Struct({
   params: Schema.optional(Schema.Unknown),
 });
 const Input = Schema.Array(
-  Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String) }),
+  Schema.Struct({
+    type: Schema.String,
+    text: Schema.optional(Schema.String),
+    url: Schema.optional(Schema.String),
+  }),
 );
 const ThreadParams = Schema.Struct({
   threadId: Schema.optional(Schema.String),
@@ -237,7 +242,14 @@ const perform = async (turn: Turn) => {
   notify("thread/status/changed", { threadId: turn.thread, status: { type: "idle" } });
 };
 
-const text = (input: typeof Input.Type) => input.map((part) => part.text ?? "").join("\n");
+const text = (input: typeof Input.Type) =>
+  input
+    .map((part) =>
+      part.type === "image" && part.url !== undefined
+        ? `say IMAGE:${createHash("sha256").update(part.url).digest("hex")}`
+        : (part.text ?? ""),
+    )
+    .join("\n");
 
 const threadBody = (id: string): Thread => ({
   id,

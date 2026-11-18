@@ -1,3 +1,4 @@
+import { AgentDefaults } from "../../../src/session/agents/agent-settings";
 import { Option, Schema } from "effect";
 import {
   Connection,
@@ -72,6 +73,17 @@ const GitHubSet = Schema.Union([
   Schema.Struct({ status: Schema.Literal("refused"), httpStatus: Schema.Number }),
 ]);
 export const repoPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const RepositoryCatalog = Schema.Struct({
+  repos: Schema.Array(Schema.String.check(Schema.isPattern(repoPattern))),
+  nextPage: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
+});
+export async function repositoryCatalog(page: number, signal: AbortSignal) {
+  return decode(
+    RepositoryCatalog,
+    await request(`/api/repositories?page=${page}`, undefined, signal),
+    "GitHub repositories",
+  );
+}
 const Repos = Schema.Struct({
   repos: Schema.Array(Schema.Struct({ repo: Schema.String, size: Size })),
 });
@@ -256,4 +268,17 @@ export async function setToolPolicy(name: string, policy: typeof ToolPolicy.Type
     ),
     "policy",
   );
+}
+
+export type AgentDefaults = typeof AgentDefaults.Type;
+const decodeAgentDefaults = Schema.decodeUnknownOption(AgentDefaults);
+export async function agentDefaults(signal?: AbortSignal): Promise<AgentDefaults> {
+  const result = Option.getOrUndefined(
+    decodeAgentDefaults(await request("/api/settings/agents", undefined, signal)),
+  );
+  if (result === undefined) throw new Error("Unreadable agent defaults");
+  return result;
+}
+export async function saveAgentDefaults(value: AgentDefaults): Promise<void> {
+  await request("/api/settings/agents", value, undefined, undefined, "PUT");
 }

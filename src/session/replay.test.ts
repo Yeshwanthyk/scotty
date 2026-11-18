@@ -49,6 +49,29 @@ describe("saved session event logs", () => {
       expect(sessionView("replay", state).display.size, file).toBe(named ?? "standard-1");
     }
   });
+  it("startup diagnostics preserve the saved run's fold and commands", async () => {
+    const events = (
+      await readFile(join(logs, "2026-11-16-startup-diagnostics-probe.jsonl"), "utf8")
+    )
+      .trim()
+      .split("\n")
+      .map((line) => decodeLine(line));
+    let observed = initial;
+    let stripped = initial;
+    for (const event of events) {
+      observed = fold(observed, event);
+      if (event.kind === "container.dial.attempt" || event.kind === "container.dial.result") {
+        expect(command(observed, event)).toBeUndefined();
+        expect(observed).toEqual({ ...stripped, lastSeq: observed.lastSeq });
+      } else {
+        const original = event.kind === "sup.hello" ? { ...event, startup: undefined } : event;
+        stripped = fold(stripped, original);
+        expect(command(observed, event)).toEqual(command(stripped, original));
+        expect(observed).toEqual(stripped);
+      }
+    }
+    expect(conversationView(observed, events).turns[0]?.assistant).toContain("startup-ready");
+  });
   it("identifies malformed and out-of-order log lines", () => {
     expect(() => replayLine(initial, "{", "broken.jsonl", 3)).toThrow("broken.jsonl:3");
     const row = JSON.stringify({
@@ -103,6 +126,7 @@ describe("saved session event logs", () => {
       if (event.seq === 7)
         expect(issued).toEqual({
           kind: "prompt",
+          images: [],
           req: "initial:1",
           turn: "0",
           text: "Describe this repository",
@@ -205,6 +229,7 @@ describe("saved session event logs", () => {
       if (event.kind === "workspace.ready")
         expect(command(state, event)).toEqual({
           kind: "prompt",
+          images: [],
           req: "initial:2",
           turn: "1",
           text: "hello",

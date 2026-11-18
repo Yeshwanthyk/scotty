@@ -1,3 +1,4 @@
+import type { PromptImage } from "../../../../protocol/prompt.js";
 import {
   query,
   type Query,
@@ -267,7 +268,12 @@ export class ClaudeRunner implements Runner {
     });
   }
 
-  send(req: string, turn: string, text: string): Effect.Effect<Delivered, AgentError> {
+  send(
+    req: string,
+    turn: string,
+    text: string,
+    images: readonly PromptImage[] = [],
+  ): Effect.Effect<Delivered, AgentError> {
     return Effect.gen({ self: this }, function* () {
       const live = this.live;
       if (live === undefined || this.session === undefined)
@@ -280,7 +286,23 @@ export class ClaudeRunner implements Runner {
       this.sent.add(uuid);
       live.inbox.push({
         type: "user",
-        message: { role: "user", content: text },
+        message: {
+          role: "user",
+          content:
+            images.length === 0
+              ? text
+              : [
+                  { type: "text", text },
+                  ...images.map((image) => ({
+                    type: "image" as const,
+                    source: {
+                      type: "base64" as const,
+                      media_type: image.mediaType,
+                      data: image.data,
+                    },
+                  })),
+                ],
+        },
         parent_tool_use_id: null,
         uuid,
         session_id: this.session,

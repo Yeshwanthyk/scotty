@@ -8,6 +8,7 @@ import { Size } from "../places/place.js";
 
 const supervisorKinds = new Set([
   "sup.hello",
+  "workspace.prepared",
   "workspace.ready",
   "agent.ready",
   "prompt.delivered",
@@ -79,7 +80,9 @@ export const kinds = [
   "sup.hello",
   "sup.hello",
   "sup.hello",
+  "workspace.prepared",
   "workspace.ready",
+  "workspace.prepared",
   "workspace.ready",
   "agent.ready",
   "prompt.requested",

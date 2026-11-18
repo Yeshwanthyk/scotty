@@ -1,15 +1,28 @@
+import type { PromptImage } from "../../protocol/prompt.js";
 import type { AgentKind, SessionEvent } from "./events.js";
 import type { State, Request } from "./fold.js";
 import { ackRecorded } from "./ack.js";
 import { firstReq, live } from "./state.js";
 
 type Resend =
-  | { readonly req: string; readonly kind: "prompt"; readonly turn: string; readonly text: string }
+  | {
+      readonly req: string;
+      readonly kind: "prompt";
+      readonly turn: string;
+      readonly text: string;
+      readonly images?: readonly PromptImage[];
+    }
   | { readonly req: string; readonly kind: "interrupt"; readonly turn: string };
 
 const toResend = (request: Request): Resend =>
   request.kind === "prompt"
-    ? { req: request.req, kind: "prompt", turn: request.turn, text: request.text }
+    ? {
+        req: request.req,
+        kind: "prompt",
+        turn: request.turn,
+        text: request.text,
+        images: request.images ?? [],
+      }
     : { req: request.req, kind: "interrupt", turn: request.turn };
 
 export type Command =
@@ -47,7 +60,13 @@ export type Command =
       readonly requests: readonly Resend[];
     }
   | { readonly kind: "ack"; readonly gen: number; readonly ack: number }
-  | { readonly kind: "prompt"; readonly req: string; readonly turn: string; readonly text: string }
+  | {
+      readonly kind: "prompt";
+      readonly req: string;
+      readonly turn: string;
+      readonly text: string;
+      readonly images?: readonly PromptImage[];
+    }
   | { readonly kind: "interrupt"; readonly req: string }
   | { readonly kind: "watch"; readonly gen: number }
   | { readonly kind: "idle"; readonly gen: number; readonly seq: number }
@@ -180,7 +199,13 @@ export function command(state: State, event: SessionEvent): Command | undefined 
               gen: event.gen,
               requests: [request, ...waiting.filter((item) => item !== request)].map(toResend),
             }
-          : { kind: "prompt", req: request.req, turn: request.turn, text: request.text };
+          : {
+              kind: "prompt",
+              req: request.req,
+              turn: request.turn,
+              text: request.text,
+              images: request.images ?? [],
+            };
       return state.gen === event.gen && state.readySeq === event.seq && waiting.length > 0
         ? { kind: "resend", gen: event.gen, requests: waiting.map(toResend) }
         : ackFor(state, event);
@@ -191,7 +216,13 @@ export function command(state: State, event: SessionEvent): Command | undefined 
         state.requests.some(
           (item) => item.req === event.req && item.seq === event.seq && item.status === "pending",
         )
-        ? { kind: "prompt", req: event.req, turn: event.turn, text: event.text }
+        ? {
+            kind: "prompt",
+            req: event.req,
+            turn: event.turn,
+            text: event.text,
+            images: event.images,
+          }
         : undefined;
     case "interrupt.requested":
       return state.ready &&
@@ -201,6 +232,7 @@ export function command(state: State, event: SessionEvent): Command | undefined 
         )
         ? { kind: "interrupt", req: event.req }
         : undefined;
+    case "workspace.prepared":
     case "agent.ready":
     case "agent.event":
     case "prompt.delivered":

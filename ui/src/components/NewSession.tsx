@@ -1,3 +1,4 @@
+import type { PromptImage } from "../../../protocol/prompt";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
   useEffect,
@@ -11,12 +12,19 @@ import {
 import { defaultSize, type Size } from "../../../src/places/place";
 import { create, lifecycle, message, type Session } from "../data/core";
 import { useSessions } from "../data/sessions-store";
-import { claudeStatus, repoDefaults, repoPattern, type RepoDefault } from "../data/settings";
+import {
+  agentDefaults,
+  claudeStatus,
+  repoDefaults,
+  repoPattern,
+  type RepoDefault,
+} from "../data/settings";
 import { ago, dormant, statusLabel, statusOf, type Status } from "../data/status";
 import { Composer } from "./Composer";
 import { Icon, Spinner } from "./Icon";
 import { SidebarButton } from "./Layout";
 import { Segmented } from "./Segmented";
+import { RepoPicker } from "./RepoPicker";
 import { SizePicker } from "./SizePicker";
 import { StatusMark } from "./Sidebar";
 
@@ -202,8 +210,11 @@ export function NewSession() {
   const [agent, setAgent] = useState<Agent>(() =>
     read(lastAgentKey) === "claude" ? "claude" : "codex",
   );
-  // A size picked by hand, for the repository it was picked for.
-  const [picked, setPicked] = useState<{ repo: string; size: typeof Size.Type }>();
+  const agentPicked = useRef(false);
+  const [agentLoaded, setAgentLoaded] = useState(false);
+  const [agentError, setAgentError] = useState("");
+  // An explicit size stays picked while the repository is edited.
+  const [picked, setPicked] = useState<typeof Size.Type>();
   // Shown only: the Worker applies a repository's default to a create that names no size.
   const [defaults, setDefaults] = useState<RepoDefault[]>([]);
   const [defaultsFailed, setDefaultsFailed] = useState(false);
@@ -211,6 +222,7 @@ export function NewSession() {
   const [claudeReady, setClaudeReady] = useState<boolean | undefined>(undefined);
   const [claudeHint, setClaudeHint] = useState(false);
   const [prompt, setPrompt] = useState("");
+  const [images, setImages] = useState<readonly PromptImage[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [filled, setFilled] = useState("");
@@ -243,6 +255,17 @@ export function NewSession() {
   );
   useEffect(() => {
     const abort = new AbortController();
+    agentDefaults(abort.signal).then(
+      (defaults) => {
+        if (abort.signal.aborted) return;
+        if (!agentPicked.current) setAgent(defaults.agent);
+        setAgentLoaded(true);
+      },
+      () => {
+        if (!abort.signal.aborted && !agentPicked.current)
+          setAgentError("Could not load the default agent. Choose an agent to continue.");
+      },
+    );
     claudeStatus(abort.signal).then(
       (status) => setClaudeReady(status.status !== "signed-out"),
       () => setClaudeReady(false),
@@ -291,22 +314,25 @@ export function NewSession() {
     const y = ((event.clientY - box.top) / box.height - 0.5) * 12;
     field.current.style.translate = `${x.toFixed(1)}px ${y.toFixed(1)}px`;
   }
-  const chosen: Agent = agent === "claude" && claudeReady === false ? "codex" : agent;
+  const chosen = agent;
   const validRepo = repoPattern.test(repo.trim());
   const repoDefault = defaults.find((item) => item.repo === repo.trim().toLowerCase());
-  const own = picked?.repo === repo.trim() ? picked.size : undefined;
+  const own = picked;
   const size = own ?? repoDefault?.size ?? defaultSize;
   function pick(next: Agent) {
     if (next === "claude" && claudeReady === false) {
       setClaudeHint(true);
       return;
     }
+    agentPicked.current = true;
+    setAgentLoaded(true);
+    setAgentError("");
     setClaudeHint(false);
     setAgent(next);
     remember(lastAgentKey, next);
   }
   function paste(event: ClipboardEvent) {
-    if (prompt.trim() !== "") return;
+    if (event.target instanceof HTMLInputElement || prompt.trim() !== "") return;
     const link = fromLink(event.clipboardData.getData("text"));
     if (link === undefined) return;
     event.preventDefault();
@@ -330,6 +356,7 @@ export function NewSession() {
     }
   }
   async function submit() {
+    if (!agentLoaded || (chosen === "claude" && claudeReady !== true)) return;
     if (!validRepo) {
       setError("Pick a repository as owner/name");
       return;
@@ -337,15 +364,17 @@ export function NewSession() {
     setBusy(true);
     setError("");
     try {
-      const input = JSON.stringify([repo.trim(), prompt.trim(), chosen, own]);
+      const submitted = prompt.trim() || "Please look at the attached images.";
+      const input = JSON.stringify([repo.trim(), submitted, chosen, own, images]);
       if (attempt.current?.input !== input) attempt.current = { input, key: crypto.randomUUID() };
       const id = await create(
-        titleOf(prompt),
+        titleOf(submitted),
         repo.trim(),
-        prompt.trim(),
+        submitted,
         attempt.current.key,
         chosen,
         own,
+        images,
       );
       remember(lastRepoKey, repo.trim());
       refresh();
@@ -398,31 +427,28 @@ export function NewSession() {
           <h1 className="desktop-only sr-only">New session</h1>
           <Composer
             label="Prompt"
+            images={images}
+            onImagesChange={setImages}
             value={prompt}
             onChange={typed}
             onSubmit={() => void submit()}
             placeholder={`Ask ${agentName[chosen]} to build, fix or explain… or paste a GitHub link`}
             busy={busy}
+            disabled={!agentLoaded || (chosen === "claude" && claudeReady !== true)}
             autoFocus
             card
           >
-            <label className="repo-picker">
-              <Icon name="repo" size={14} />
-              <input
-                value={repo}
-                onChange={(event) => {
-                  setRepo(event.target.value);
-                  setFilled("");
-                }}
-                placeholder="owner/repo"
-                aria-label="Repository"
-                aria-invalid={repo !== "" && !validRepo}
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                style={{ width: `${Math.max(10, repo.length + 1)}ch` }}
-              />
-            </label>
+            <RepoPicker
+              value={repo}
+              known={[
+                ...defaults.map((item) => item.repo),
+                ...(list ?? []).map((session) => session.display.repository),
+              ]}
+              onChange={(value) => {
+                setRepo(fromLink(value)?.repo ?? value);
+                setFilled("");
+              }}
+            />
             <Segmented
               label="Agent"
               options={[
@@ -437,9 +463,11 @@ export function NewSession() {
               align="start"
               // Unread defaults: the Worker still applies the repository's, whatever it is.
               {...(own === undefined && defaultsFailed ? { label: "repo default" } : {})}
-              onChange={(next) => setPicked({ repo: repo.trim(), size: next })}
+              onChange={setPicked}
             />
           </Composer>
+          {agentError ? <p role="alert">{agentError}</p> : null}
+          {!agentLoaded && !agentError ? <p>Loading default agent…</p> : null}
           {filled !== "" ? (
             <p className="composer-note">
               <Icon name="check" size={13} />
@@ -463,7 +491,7 @@ export function NewSession() {
               </span>
             </p>
           ) : null}
-          {claudeHint ? (
+          {claudeHint || (chosen === "claude" && claudeReady === false) ? (
             <p className="composer-note">
               <Icon name="alert" size={13} />
               <span>

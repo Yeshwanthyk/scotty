@@ -1,3 +1,4 @@
+import type { PromptImage } from "../../protocol/prompt.js";
 import { Effect, Schema } from "effect";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import type CredsObject from "../creds/object.js";
@@ -21,6 +22,7 @@ export const Prompt = Schema.String.check(
 export type StartInput = {
   repo: string;
   prompt: string;
+  images?: readonly PromptImage[];
   title: string;
   agent: typeof AgentKind.Type;
   // Where the container runs; absent, the default place.
@@ -50,6 +52,7 @@ export function startSession(
     const request = {
       req: input.retry,
       prompt: input.prompt,
+      images: input.images ?? [],
       repo: input.repo,
       agentKind: input.agent,
       // Named only when the caller named them: a retried create is compared with what it named.

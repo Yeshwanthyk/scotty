@@ -1,3 +1,4 @@
+import { PromptImages } from "./prompt.js";
 import { Schema } from "effect";
 
 const sequence = Schema.Int.check(
@@ -122,6 +123,7 @@ export const ToSupervisor = Schema.Union([
     req: identifier,
     turn: identifier,
     text: Schema.String,
+    images: Schema.optionalKey(PromptImages),
   }),
   Schema.Struct({ ...envelope, type: Schema.Literal("interrupt"), req: identifier }),
   Schema.Struct({ ...envelope, type: Schema.Literal("ack"), ack: acknowledgement }),
@@ -134,7 +136,15 @@ export const Workspace = Schema.Struct({
   thread: identifier,
 });
 export type Workspace = typeof Workspace.Type;
+// Milliseconds; process ages share the supervisor's monotonic uptime clock.
+export const StartupTiming = Schema.Struct({
+  processOriginEstimate: Schema.Finite,
+  listeningAt: Schema.Finite,
+  listeningAgeMs: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  helloAgeMs: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+});
 export const FromSupervisor = Schema.Union([
+  Schema.Struct({ ...envelope, type: Schema.Literal("workspace_prepared") }),
   Schema.Struct({
     ...envelope,
     type: Schema.Literal("hello"),
@@ -143,6 +153,7 @@ export const FromSupervisor = Schema.Union([
     // The marker written at workspace_ready, when the disk kept it: the session it belongs to,
     // its branch, the commit the branch was made from, and the agent's thread id.
     workspace: Schema.optionalKey(Workspace),
+    startup: Schema.optionalKey(StartupTiming),
   }),
   Schema.Struct({
     ...envelope,

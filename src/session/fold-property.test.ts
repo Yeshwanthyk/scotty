@@ -17,6 +17,7 @@ import {
 } from "./fold-fixtures.js";
 
 const supervisor = new Set([
+  "workspace.prepared",
   "workspace.ready",
   "agent.ready",
   "prompt.delivered",

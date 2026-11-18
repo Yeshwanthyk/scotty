@@ -36,16 +36,24 @@ jobs:
           TOKEN: ${{ secrets.SCOTTY_DOCKERHUB_TOKEN }}
         run: printf '%s' "$TOKEN" | docker login docker.io --username "$USERNAME" --password-stdin
       - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: container/Dockerfile
+          platforms: linux/amd64
+          tags: ${{ env.REPOSITORY }}:rebuild-${{ github.sha }}
+          provenance: false
+          push: true
+          # Inputs and base-image identity invalidate layers; eviction only causes a rebuild.
+          cache-from: type=gha,version=2,scope=scotty-image-linux-amd64
+          cache-to: type=gha,version=2,scope=scotty-image-linux-amd64,mode=max
+      - name: Record image digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           tag="$REPOSITORY:rebuild-$GITHUB_SHA"
-          docker buildx build \
-            --platform linux/amd64 \
-            --file container/Dockerfile \
-            --tag "$tag" \
-            --provenance=false \
-            --metadata-file "$RUNNER_TEMP/metadata.json" \
-            --push .
-          digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/metadata.json")
+          digest="$DIGEST"
           case "$digest" in sha256:*) ;; *) echo "no digest in build metadata" >&2; exit 1 ;; esac
           {
             echo "### Supervisor image"

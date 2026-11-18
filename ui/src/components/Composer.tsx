@@ -1,3 +1,5 @@
+import { imageUrl, type PromptImage } from "../../../protocol/prompt";
+import { prepareImage } from "./prompt-images";
 import {
   useLayoutEffect,
   useRef,
@@ -102,6 +104,8 @@ export function Composer({
   card = false,
   children,
   label,
+  images = [],
+  onImagesChange,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -121,21 +125,73 @@ export function Composer({
   children?: ReactNode;
   /** The text field's accessible name. */
   label: string;
+  images?: readonly PromptImage[];
+  onImagesChange?: (images: readonly PromptImage[]) => void;
 }) {
   const area = useRef<HTMLTextAreaElement>(null);
-  const open = useOpen(area, value, card);
-  const empty = value.trim() === "";
+  const picker = useRef<HTMLInputElement>(null);
+  const [imageError, setImageError] = useState("");
+  const [preparing, setPreparing] = useState(false);
+  const open = useOpen(area, value, card || images.length > 0);
+  const empty = value.trim() === "" && images.length === 0;
+  async function attach(files: readonly File[]) {
+    if (onImagesChange === undefined || preparing || disabled || busy || files.length === 0) return;
+    setImageError("");
+    if (images.length + files.length > 4) {
+      setImageError("Attach up to four images per message");
+      return;
+    }
+    setPreparing(true);
+    try {
+      onImagesChange([...images, ...(await Promise.all(files.map(prepareImage)))]);
+    } catch (failure) {
+      setImageError(failure instanceof Error ? failure.message : "Could not prepare the image");
+    } finally {
+      setPreparing(false);
+    }
+  }
   const stop = working && empty && onStop !== undefined;
   return (
     <form
       className="composer"
       data-open={open}
+      onDragOver={(event) => {
+        if (onImagesChange !== undefined && event.dataTransfer.types.includes("Files"))
+          event.preventDefault();
+      }}
+      onDrop={(event) => {
+        if (onImagesChange !== undefined) {
+          event.preventDefault();
+          void attach([...event.dataTransfer.files]);
+        }
+      }}
       onSubmit={(event) => {
         event.preventDefault();
         if (stop) onStop();
-        else if (!empty && !busy && !disabled) onSubmit();
+        else if (!empty && !busy && !disabled && !preparing) onSubmit();
       }}
     >
+      {images.length > 0 ? (
+        <div className="prompt-images">
+          {images.map((image, index) => (
+            <figure key={index}>
+              <img src={imageUrl(image)} alt={`Attached image ${index + 1}`} />
+              <button
+                type="button"
+                className="icon-button"
+                aria-label={`Remove image ${index + 1}`}
+                disabled={busy || disabled || preparing}
+                onClick={() => {
+                  onImagesChange?.(images.filter((_, at) => at !== index));
+                  setImageError("");
+                }}
+              >
+                <Icon name="x" size={14} />
+              </button>
+            </figure>
+          ))}
+        </div>
+      ) : null}
       <textarea
         ref={area}
         rows={1}
@@ -144,6 +200,13 @@ export function Composer({
         disabled={disabled}
         aria-label={label}
         placeholder={placeholder}
+        onPaste={(event) => {
+          const files = [...event.clipboardData.files];
+          if (onImagesChange !== undefined && files.length > 0) {
+            event.preventDefault();
+            void attach(files);
+          }
+        }}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={(event) => {
           if (!sends(event)) return;
@@ -152,13 +215,47 @@ export function Composer({
         }}
       />
       <div className="composer-bar">
+        {onImagesChange === undefined ? null : (
+          <>
+            <input
+              ref={picker}
+              type="file"
+              accept="image/*"
+              multiple
+              hidden
+              aria-label="Image files"
+              onChange={(event) => {
+                void attach([...(event.target.files ?? [])]);
+                event.target.value = "";
+              }}
+            />
+            <button
+              type="button"
+              className="icon-button pressable attach-images"
+              aria-label="Attach images"
+              disabled={busy || disabled || preparing}
+              onClick={() => picker.current?.click()}
+            >
+              <Icon name="image" size={16} />
+            </button>
+          </>
+        )}
         {children}
         {stop ? (
           <StopButton disabled={disabled || busy} />
         ) : (
-          <SendButton disabled={disabled || busy || empty} />
+          <SendButton disabled={disabled || busy || empty || preparing} />
         )}
       </div>
+      {imageError ? (
+        <p className="composer-note" role="alert">
+          {imageError}
+        </p>
+      ) : preparing ? (
+        <p className="composer-note" role="status">
+          Preparing images…
+        </p>
+      ) : null}
     </form>
   );
 }

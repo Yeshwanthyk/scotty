@@ -34,3 +34,18 @@ A quiet turn keeps running, an idle session sleeps and frees its container, and 
 - Any request to the session keeps its DO in memory, so step 1 must stay silent to test eviction.
 - An open terminal socket keeps an idle session awake; close the terminal before waiting for sleep.
 - The `stalled` stop (30 minutes without agent output) is proved by fold tests only.
+
+## Startup progress
+
+Run `npm run --silent e2e -- startup`: five fresh sequential scripted sessions must complete
+with `startup-ready` and ordered container start, dial beginning, supervisor hello, workspace preparation,
+runner readiness, agent identity, prompt delivery and completed answer. The command prints
+server timestamp offsets and saves each event log, and stops every session it creates.
+`--real` runs one real-agent smoke test; `--agent claude` selects Claude.
+
+In a fresh browser session, verify Preparing the workspace ends at `workspace.prepared`,
+Starting the agent covers runner initialization, and Waiting for the first response follows
+readiness until output. Reload during startup and verify the session answers without stuck progress.
+`e2e stop-resume` checks a new generation restores the workspace and answers again.
+These checks establish truthful progress and behavior, not a latency improvement; placement,
+image warmth and real-model response times are uncontrolled.

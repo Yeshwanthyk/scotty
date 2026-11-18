@@ -54,6 +54,20 @@ npm run --silent scotty -- doctor
 2. A fold bug gets a failing replay test; any other bug gets one failing e2e assertion.
 3. It is fixed when that test and `npm run e2e -- core` pass.
 
+## Owner trial fixes
+
+Ship each piece as it passes, through a PR to `main`, then deploy to `scotty.yeshyendamuri.dev`.
+
+- [x] Use an account-supported Codex default; `e2e drafts --real` completed with `gpt-6.1-sol`.
+- [x] Keep an explicitly chosen size while editing the repository; live browser retained `standard-2`, and `e2e drafts --real` read it back on the created session.
+- [x] Save default agent/model/effort in Settings; `e2e defaults --real` saved/read back, rejected invalid values, selected the default agent and used saved model/effort at a real start; browser Save survived reload.
+- [x] Add System / Light / Dark appearance; live browser reload retained Dark and Light, System followed both preferred schemes, and model/effort fields fit at 375 px.
+- [x] Attach, paste and drop images; live `e2e images` passed for Codex and Claude, real Codex described two browser attachments, and desktop/mobile previews and retained conversation images passed after redeploy. Fold tests pin pending resend payloads.
+- [x] Search repository choices in New session; `e2e repositories` paged all 270 real GitHub repositories and rejected invalid queries, core e2e passed, and browser search/manual URL/keyboard/mobile selection retained standard-2 on the created private-repository session.
+- [x] Show startup stages at their actual boundaries; `e2e startup` passed five scripted Codex runs and a real Claude run, core reconnect and stop-resume passed, and a real Codex browser showed all four stages at 375 px. The log now splits start setup from dialing.
+- [x] Capture the intermittent pre-hello wait with process/listen ages and bounded per-dial results. Five sequential scripted fixture starts completed; slow runs took 43767/52385 ms to hello while the supervisor was only 844/420 ms old. This supports delayed process startup, not an early listener waiting tens of seconds. Fold equivalence, saved replays, core e2e and doctor passed. Provider image preparation versus VM/runtime startup remains unresolved; no latency optimization is established (design.md "Startup causal follow-up").
+- [x] Preserve unchanged image layers with scoped persistent CI cache; CI runs `43819054782`/`43819218440` passed, the warm build cached 18 steps and retained all 14 layer digests (including the heavy tool layer). Pinned image `a9328d35` deployed, provider instance image readback matched, core e2e and doctor passed. This addresses proven identity churn, without claiming a startup latency fix.
+
 ## Open
 
 | Item | Title                           | Depends on     | Status   |

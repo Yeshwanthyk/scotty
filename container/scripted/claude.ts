@@ -18,6 +18,8 @@ import type {
   SDKResultMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import { createHash } from "node:crypto";
+import { PromptImage, imageUrl } from "../../protocol/prompt.js";
 import { Option, Schema } from "effect";
 import { call, fill, lines, shell, step, type Step } from "./script.js";
 
@@ -32,7 +34,13 @@ const UserMessage = Schema.Struct({
   message: Schema.Struct({
     content: Schema.Union([
       Schema.String,
-      Schema.Array(Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String) })),
+      Schema.Array(
+        Schema.Struct({
+          type: Schema.String,
+          text: Schema.optional(Schema.String),
+          source: Schema.optional(Schema.Unknown),
+        }),
+      ),
     ]),
   }),
 });
@@ -236,10 +244,22 @@ const perform = async (turn: Turn) => {
   write(result(turn));
 };
 
+const ImageSource = Schema.Struct({
+  type: Schema.Literal("base64"),
+  media_type: PromptImage.fields.mediaType,
+  data: PromptImage.fields.data,
+});
 const prompt = (content: typeof Input.Type & { type: "user" }) =>
   typeof content.message.content === "string"
     ? content.message.content
-    : content.message.content.map((part) => part.text ?? "").join("\n");
+    : content.message.content
+        .map((part) => {
+          if (part.type !== "image") return part.text ?? "";
+          const source = Schema.decodeUnknownSync(ImageSource)(part.source);
+          const url = imageUrl({ mediaType: source.media_type, data: source.data });
+          return `say IMAGE:${createHash("sha256").update(url).digest("hex")}`;
+        })
+        .join("\n");
 
 const control = (response: SDKControlResponse["response"]) =>
   write({ type: "control_response", response } satisfies SDKControlResponse);
