@@ -95,11 +95,11 @@ const program = Effect.gen(function* () {
       const conversation = yield* request(`${prefix}/conversation`, Conversation);
       return conversation.turns.find((item) => item.id === req)?.assistant ?? "";
     });
+  const pauses = (log: typeof Log.Type) => log.filter((e) => e.kind === "place.paused").length;
   const stop = Effect.gen(function* () {
+    const before = pauses(yield* events());
     yield* request(`${prefix}/stop`, View, { method: "POST" });
-    return yield* poll(events, (log) => log.some((e) => e.kind === "place.paused"), {
-      stopped: "expected",
-    });
+    return yield* poll(events, (log) => pauses(log) > before, { stopped: "expected" });
   });
   const cat = prompt(
     "Run exactly: `cat marker.txt` and reply with its full output.",
