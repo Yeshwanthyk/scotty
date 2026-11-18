@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import * as Arbitrary from "effect/unstable/arbitrary/Arbitrary";
+import * as Arbitrary from "effect/Arbitrary";
 import { decodeSessionEvent } from "./events.js";
 import { command } from "./commands.js";
 import { deadline, fold, initial, resizeConflict, type State } from "./fold.js";

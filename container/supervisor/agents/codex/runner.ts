@@ -1,6 +1,6 @@
 import { imageUrl, type PromptImage } from "../../../../protocol/prompt.js";
 import { Effect, Option, Queue, Result, Schema, Stream, type Scope, type FileSystem } from "effect";
-import type { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChildProcessSpawner } from "effect/process";
 import { supervisorVersion } from "../../../../protocol/supervisor.js";
 import { launchCodex } from "./config.js";
 import { CodexRpc } from "./rpc.js";

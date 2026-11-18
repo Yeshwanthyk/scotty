@@ -1,5 +1,5 @@
 import { Effect, Exit, Option, Schema } from "effect";
-import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/cli";
 import { Size } from "../../src/places/place.js";
 import { Log, Removed, Reply, View, failure } from "../client.js";
 import { removeConnection } from "./connections.js";

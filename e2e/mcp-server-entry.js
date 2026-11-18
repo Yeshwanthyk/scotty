@@ -1,5 +1,5 @@
 import { env, DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { makeDurableObjectBridge, makeWorkerBridge } from "alchemy/Cloudflare/Bridge";
+import { makeDurableObjectBridge, makeWorkerBridge } from "@alchemy.run/cloudflare/Bridge";
 import entrypoint from "./mcp-server.ts";
 const meta = { entrypoint, stack: { name: "scotty", stage: env.ALCHEMY_STAGE } };
 export default makeWorkerBridge(WorkerEntrypoint, meta);

@@ -1,6 +1,6 @@
 import { Effect } from "effect";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import type * as Cloudflare from "alchemy/Cloudflare";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import type * as Cloudflare from "@alchemy.run/cloudflare";
 import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import { startSession } from "../http/start.js";

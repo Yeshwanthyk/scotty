@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { SourceFailure, type SourceSpec } from "../settings/skills.js";
 
 const headers = (token: string, accept: string) => ({

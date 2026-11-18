@@ -1,6 +1,6 @@
 import { expect } from "@effect/vitest";
 import { Schema } from "effect";
-import * as Arbitrary from "effect/unstable/arbitrary/Arbitrary";
+import * as Arbitrary from "effect/Arbitrary";
 import { decodeSessionEvent, type SessionEvent } from "./events.js";
 import { deadline, fold, initial, invariants, type State } from "./fold.js";
 import { live } from "./state.js";

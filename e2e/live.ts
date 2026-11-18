@@ -1,6 +1,6 @@
 import { BunSocket } from "@effect/platform-bun";
 import { Effect, Option, Schema } from "effect";
-import { WebSocketConstructor, type WebSocketLike } from "effect/unstable/socket/Socket";
+import { WebSocketConstructor, type WebSocketLike } from "effect/socket/Socket";
 import {
   access,
   CliFailure,

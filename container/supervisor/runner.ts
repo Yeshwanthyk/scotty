@@ -1,6 +1,6 @@
 import type { PromptImage } from "../../protocol/prompt.js";
 import { Schema, type Effect, type Stream, type Scope, type FileSystem } from "effect";
-import type { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChildProcessSpawner } from "effect/process";
 import type { AgentConfig } from "../../protocol/supervisor.js";
 
 import type { Output } from "./wire.js";

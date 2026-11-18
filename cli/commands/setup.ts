@@ -1,6 +1,6 @@
 import { Effect, Exit, Option, Schema, Stream } from "effect";
-import { Argument, Command } from "effect/unstable/cli";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { Argument, Command } from "effect/cli";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { BunServices } from "@effect/platform-bun";
 import { version } from "../../src/version.js";
 import {

@@ -1,5 +1,5 @@
 import { Effect, Option } from "effect";
-import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/cli";
 import { AutomationRemoved, Automations, AutomationSwitched, RunFired, Runs } from "../client.js";
 import { ago, bold, dim, green, output, short, table, usage, withClient } from "./common.js";
 import { repoName } from "./sessions.js";

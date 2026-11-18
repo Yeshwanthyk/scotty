@@ -1,9 +1,9 @@
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { RuntimeContext, Stack } from "alchemy";
 import { Config, Effect, Exit, Option, Schema, SchemaTransformation } from "effect";
-import * as HttpRouter from "effect/unstable/http/HttpRouter";
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { fireRun } from "./automations/fire.js";
 import { reachHandler } from "./creds/reach.js";
 import { ConnectionName } from "./creds/connections.js";

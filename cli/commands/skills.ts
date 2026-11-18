@@ -1,5 +1,5 @@
 import { Effect, Option } from "effect";
-import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/cli";
 import { Settings, SkillSwitched, SourceRemoved, SourceSaved, StyleSet } from "../client.js";
 import { ago, bold, dim, green, output, table, usage, withClient } from "./common.js";
 

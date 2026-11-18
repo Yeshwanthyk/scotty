@@ -1,5 +1,5 @@
 import { Effect, FileSystem } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { Config } from "../../runner.js";
 import { AgentError } from "../../runner.js";
 import { processEnv } from "../../runtime.js";

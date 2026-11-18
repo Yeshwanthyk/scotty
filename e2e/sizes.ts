@@ -1,7 +1,7 @@
 import { BunServices } from "@effect/platform-bun";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { Effect, Option, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   access,
   AutomationRemoved,

@@ -1,11 +1,11 @@
 import { PromptImages, promptFits } from "../../protocol/prompt.js";
 import { AgentDefaults, stageAgentDefaults } from "../session/agents/agent-settings.js";
 import { Config, Effect, Exit, Result, Schema, Stream } from "effect";
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
-import type * as Cloudflare from "alchemy/Cloudflare";
+import type * as Cloudflare from "@alchemy.run/cloudflare";
 import { AgentKind } from "../session/events.js";
 import { Size } from "../places/place.js";
 import { maxSearch, SearchQuery } from "../session/search.js";
