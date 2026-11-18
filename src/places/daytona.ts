@@ -28,6 +28,7 @@ type Op = typeof PlaceFailed.fields.op.Type;
 
 const running = new Set(["started", "starting", "creating", "restoring", "pending_build"]);
 const resting = new Set(["stopped", "stopping", "archived", "archiving"]);
+const settledRest = new Set(["stopped", "archived"]);
 const label = (session: string, gen: number) => ({ "scotty-session": `${session}/${gen}` });
 
 /**
@@ -110,7 +111,11 @@ export const daytonaPlace: (input: {
   const start = (op: Op, handle: string) =>
     Effect.gen(function* () {
       forget(handle);
-      const before = yield* state(op, handle);
+      const first = yield* state(op, handle);
+      const before =
+        first?.state === "stopping" || first?.state === "archiving"
+          ? yield* settle(op, handle, (current) => settledRest.has(current))
+          : first;
       if (before === undefined || before.state === "destroyed" || before.state === "destroying")
         return "gone" as const;
       if (before.state === "error") {
@@ -216,10 +221,10 @@ export const daytonaPlace: (input: {
         forget(handle);
         if (!(yield* act("pause", `/sandbox/${encodeURIComponent(handle)}/stop`, "POST")))
           return "gone" as const;
-        const after = yield* settle("pause", handle, (current) => resting.has(current));
+        const after = yield* settle("pause", handle, (current) => settledRest.has(current));
         if (after === undefined || after.state === "destroyed" || after.state === "error")
           return "gone" as const;
-        if (resting.has(after.state)) return "paused" as const;
+        if (settledRest.has(after.state)) return "paused" as const;
         return yield* new PlaceFailed({ op: "pause" });
       }),
     resume: (handle) => start("resume", handle),
