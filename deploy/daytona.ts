@@ -2,7 +2,8 @@ import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import { daytonaApi, daytonaShapes, daytonaSnapshot } from "../src/places/daytona.js";
-import { placeCatalog } from "../src/places/place.js";
+import { placeCatalog, placeKeys } from "../src/places/place.js";
+import type { PlaceDeploy } from "./places.ts";
 
 export class DaytonaError extends Schema.TaggedError<DaytonaError>()("DaytonaError", {
   message: Schema.String,
@@ -51,13 +52,12 @@ const decoded = <A, I>(key: string, path: string, schema: Schema.Codec<A, I>) =>
 const done = (response: Response) =>
   Effect.promise(() => response.body?.cancel() ?? Promise.resolve());
 
-export const snapshotPrefix = (stage: string, image: string) => {
+const snapshotPrefix = (stage: string, image: string) => {
   const digest = /@sha256:([a-f0-9]{64})$/.exec(image)?.[1] ?? "";
   return `scotty-${stage}-${digest.slice(0, 12)}`;
 };
 
-/** Makes the stage's snapshot for each size Daytona offers from `image`, and waits until each is active. */
-export const ensureSnapshots = (key: string, prefix: string, image: string) =>
+const ensureSnapshots = (key: string, prefix: string, image: string) =>
   Effect.forEach(
     placeCatalog.daytona.sizes,
     (size) =>
@@ -131,8 +131,7 @@ const stageSandboxes = (key: string, stage: string) =>
     Sandboxes,
   ).pipe(Effect.map((listed) => (listed?.items ?? []).map((sandbox) => sandbox.id)));
 
-/** Deletes the stage's sandboxes, then its snapshots. */
-export const removeDaytona = (key: string, stage: string) =>
+const removeDaytona = (key: string, stage: string) =>
   Effect.gen(function* () {
     for (const id of yield* stageSandboxes(key, stage))
       yield* done(yield* request(key, `/sandbox/${encodeURIComponent(id)}`, { method: "DELETE" }));
@@ -142,7 +141,7 @@ export const removeDaytona = (key: string, stage: string) =>
       );
   });
 
-export const daytonaLeftovers = (key: string, stage: string) =>
+const daytonaLeftovers = (key: string, stage: string) =>
   Effect.gen(function* () {
     const sandboxes = yield* stageSandboxes(key, stage);
     const snapshots = yield* stageSnapshots(key, stage);
@@ -151,3 +150,14 @@ export const daytonaLeftovers = (key: string, stage: string) =>
       ...snapshots.map((snapshot) => `Daytona snapshot ${snapshot.name}`),
     ];
   });
+
+export const daytonaDeploy = {
+  name: "Daytona",
+  env: placeKeys.daytona.env,
+  prepare: (key, stage, image) => {
+    const prefix = snapshotPrefix(stage, image);
+    return ensureSnapshots(key, prefix, image).pipe(Effect.as({ SCOTTY_DAYTONA_SNAPSHOT: prefix }));
+  },
+  remove: removeDaytona,
+  leftovers: daytonaLeftovers,
+} satisfies PlaceDeploy;
