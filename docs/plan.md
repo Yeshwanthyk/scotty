@@ -81,7 +81,7 @@ Ship each piece as it passes, through a PR to `main`, then deploy to `scotty.yes
 | E1   | Egress gateway                  | none           | built    |
 | E2   | Place, key and size on entry    | none           | done     |
 | R2   | Runners on the owner's boxes    | L1, W1, E1, E2 | todo     |
-| D1   | Daytona place                   | L1, W1, E1     | todo     |
+| D1   | Daytona place                   | L1, W1, E1     | built    |
 | B1   | Boat place                      | L1, W1, E1     | todo     |
 | R3   | Where a session runs            | R2             | todo     |
 | Z1   | The agent asks for more         | S6             | todo     |
@@ -163,8 +163,9 @@ Ship each piece as it passes, through a PR to `main`, then deploy to `scotty.yes
 
 ### D1: Daytona place / B1: Boat place
 
-- **In scope:** one module each, `keeps: "disk"`, on the provider's API with its key in the Creds DO; hatch and terminal through `port`; egress through `/egress`.
+- **In scope:** one module each, `keeps: "disk"`, on the provider's API with its key in the Creds DO; hatch and terminal through `port`; traffic back to the Worker through the supervisor's tunnel.
 - **Done when:** `e2e daytona` / `e2e boat` create a scripted session, steer it, sleep it, wake it from disk (no restore), and open a hatch preview through the Worker; a sandbox deleted while paused wakes by restore.
+- **Notes (Daytona, 2026-11-18):** built on `daytona-place`; design.md "Places" has the facts. `/egress` and its tokens were replaced by the supervisor tunnel (design.md "Places"), so E1's mint and revoke are gone. Sizes fit per place in the fold (`fitSize`); `e2e daytona` asks for `standard-4` and expects `standard-2`. The create now fails, and is retried, when removing a gone handle fails, which closes L1's leak note. Not yet run against a deployment: needs `DAYTONA_API_KEY` at deploy, `scotty login daytona`, then `e2e daytona`, `core` and `github`. Boat is not started.
 
 ### R2: runners on the owner's boxes
 
