@@ -74,6 +74,7 @@ export class SupervisorLink {
         candidate.close();
         return;
       }
+      candidate.binaryType = "arraybuffer";
       setSocket(candidate);
       candidate.addEventListener("message", (event: MessageEvent) => {
         if (!isCurrent(candidate)) return;

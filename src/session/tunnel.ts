@@ -15,6 +15,8 @@ import {
   TunnelRequest,
 } from "../../protocol/tunnel.js";
 
+declare const FixedLengthStream: new (length: number) => TransformStream<Uint8Array, Uint8Array>;
+
 type Send = (frame: Uint8Array<ArrayBuffer>) => void;
 export type Serve = (
   head: typeof TunnelRequest.Type,
@@ -87,9 +89,16 @@ export class TunnelServer {
     const headers = head.value.headers.filter(
       ([name]) => !hopHeaders.has(name.toLowerCase()) && !name.toLowerCase().startsWith("cf-"),
     );
+    const length = head.value.headers.find(
+      ([name]) => name.toLowerCase() === "content-length",
+    )?.[1];
+    const stream =
+      body !== undefined && length !== undefined && /^\d{1,15}$/.test(length)
+        ? body.stream.pipeThrough(new FixedLengthStream(Number(length)))
+        : (body?.stream ?? null);
     void this.relay(
       id,
-      this.serve({ ...head.value, headers }, body?.stream ?? null, abort.signal),
+      this.serve({ ...head.value, headers }, stream, abort.signal),
       send,
       credit,
       abort.signal,
