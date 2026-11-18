@@ -20,6 +20,9 @@ import {
   defaultCodexSettings,
 } from "../src/session/agents/agent-settings.js";
 import { copyImage } from "./image.ts";
+import { daytonaLeftovers, ensureSnapshots, removeDaytona, snapshotPrefix } from "./daytona.ts";
+
+const daytonaKey = () => process.env["DAYTONA_API_KEY"]?.trim() || undefined;
 
 export const compatibilityDate = "2026-09-01";
 
@@ -214,6 +217,16 @@ export const deployStage = (
       ),
     );
 
+    const daytona = daytonaKey();
+    const source = image ?? release.image;
+    const snapshot = daytona === undefined ? undefined : snapshotPrefix(stage, source);
+    if (daytona !== undefined && snapshot !== undefined) {
+      yield* say("Making the Daytona snapshots");
+      yield* ensureSnapshots(daytona, snapshot, source).pipe(
+        Effect.mapError((error) => new DeployError({ message: error.message })),
+      );
+    }
+
     yield* say("Preparing the container image");
     const prepared = yield* cloudflare(
       `/accounts/${accountId}/containers/image-preparations`,
@@ -297,6 +310,7 @@ export const deployStage = (
         text("SCOTTY_CLAUDE_MODEL", claude.model),
         text("SCOTTY_CLAUDE_EFFORT", claude.effort),
         text("SCOTTY_MAX_RUNNING", String(config.maxRunning ?? 20)),
+        ...(snapshot === undefined ? [] : [text("SCOTTY_DAYTONA_SNAPSHOT", snapshot)]),
       ],
       containers: [{ class_name: "SessionObject", images: { session: copied } }],
       ...(migrated
@@ -569,6 +583,14 @@ export const removeStage = (config: Config, progress: (text: string) => void) =>
     yield* say("Removing the preview address");
     for (const record of yield* wildcardRecords(zoneId, name.wildcard))
       if (record.id) yield* Dns.deleteRecord({ zoneId, dnsRecordId: record.id });
+
+    const daytona = daytonaKey();
+    if (daytona !== undefined) {
+      yield* say("Removing the Daytona sandboxes and snapshots");
+      yield* removeDaytona(daytona, config.stage).pipe(
+        Effect.mapError((error) => new DeployError({ message: error.message })),
+      );
+    }
   });
 
 export const leftovers = (config: Config) =>
@@ -588,6 +610,13 @@ export const leftovers = (config: Config) =>
     const egress = yield* accessApps(accountId, name.egress);
     const mcp = yield* accessApps(accountId, name.mcp);
     const records = yield* wildcardRecords(zoneId, name.wildcard);
+    const daytona = daytonaKey();
+    const atDaytona =
+      daytona === undefined
+        ? []
+        : yield* daytonaLeftovers(daytona, config.stage).pipe(
+            Effect.mapError((error) => new DeployError({ message: error.message })),
+          );
     return [
       ...[
         ...scripts,
@@ -599,5 +628,6 @@ export const leftovers = (config: Config) =>
       ...egress.map(() => `Access app ${name.egress}`),
       ...mcp.map(() => `Access app ${name.mcp}`),
       ...records.map(() => `DNS record ${name.wildcard}`),
+      ...atDaytona,
     ];
   });

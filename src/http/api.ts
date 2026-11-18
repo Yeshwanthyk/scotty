@@ -113,6 +113,10 @@ const ClaudeToken = Schema.Struct({
   token: Schema.String.check(Schema.isPattern(/^sk-ant-oat01-[A-Za-z0-9_-]{20,300}$/)),
 });
 const claudeHint = "scotty login claude";
+const DaytonaKey = Schema.Struct({
+  key: Schema.String.check(Schema.isPattern(/^dtn_[A-Za-z0-9_-]{20,200}$/)),
+});
+const daytonaHint = "scotty login daytona";
 const Instructions = Schema.Struct({
   text: Schema.String.check(
     Schema.makeFilter((text) => new TextEncoder().encode(text).byteLength <= maxInstructionBytes, {
@@ -217,6 +221,20 @@ export function apiHandler(
       );
       if (HttpServerResponse.isHttpServerResponse(body)) return body;
       return yield* HttpServerResponse.json(yield* credential.setClaude(body.token));
+    }
+    if (url.pathname === "/api/credentials/daytona" && request.method === "GET")
+      return yield* HttpServerResponse.json(yield* credential.daytonaStatus());
+    if (url.pathname === "/api/credentials/daytona" && request.method === "POST") {
+      const body = yield* Schema.decodeUnknownEffect(DaytonaKey)(yield* request.json).pipe(
+        Effect.catchTag("SchemaError", () =>
+          bad("Expected a Daytona API key (dtn_…)", 400, daytonaHint),
+        ),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
+      const result = yield* credential.setDaytona(body.key);
+      if (result.status === "refused")
+        return yield* bad(`Daytona answered HTTP ${result.httpStatus}`, 400, daytonaHint);
+      return yield* HttpServerResponse.json(result);
     }
     if (url.pathname === "/api/version" && request.method === "GET")
       return yield* HttpServerResponse.json({ version });

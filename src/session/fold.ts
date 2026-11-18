@@ -2,7 +2,7 @@ import { sameImages, type PromptImage } from "../../protocol/prompt.js";
 import { shouldAck } from "./ack.js";
 import type { SessionEvent } from "./events.js";
 import { deadlines, has, remove, addOnce, reqOp, requestFromOp, idleWindow } from "./deadlines.js";
-import { defaultPlace, defaultSize, type Size } from "../places/place.js";
+import { defaultPlace, defaultSize, fitSize, type Size } from "../places/place.js";
 import { firstReq, live, type Request, type State } from "./state.js";
 import { threadGone } from "../../protocol/supervisor.js";
 export { initial } from "./state.js";
@@ -18,7 +18,9 @@ export const resizeConflict: (
   state: State,
   size: typeof Size.Type | undefined,
 ) => "running" | "failed" | undefined = (state, size) =>
-  size === undefined || size === state.size || resumable(state)
+  size === undefined ||
+  fitSize(state.created?.place ?? defaultPlace, size) === state.size ||
+  resumable(state)
     ? undefined
     : state.phase === "failed"
       ? "failed"
@@ -252,7 +254,12 @@ const step: (state: State, event: SessionEvent) => State = function step(state, 
       return next;
     case "created":
       return state.created === undefined
-        ? { ...next, created: event, activeAt: event.at, size: event.size ?? defaultSize }
+        ? {
+            ...next,
+            created: event,
+            activeAt: event.at,
+            size: fitSize(event.place ?? defaultPlace, event.size ?? defaultSize),
+          }
         : next;
     case "container.start":
       if (state.created === undefined || !live(state) || state.gen !== undefined) return next;
@@ -614,7 +621,17 @@ const step: (state: State, event: SessionEvent) => State = function step(state, 
       };
     case "resume.requested":
       return resumable(state)
-        ? resume({ ...next, activeAt: event.at, size: event.size ?? state.size }, event.at)
+        ? resume(
+            {
+              ...next,
+              activeAt: event.at,
+              size:
+                event.size === undefined
+                  ? state.size
+                  : fitSize(state.created?.place ?? defaultPlace, event.size),
+            },
+            event.at,
+          )
         : next;
     case "container.stopped":
       if (event.gen !== state.gen) return next;

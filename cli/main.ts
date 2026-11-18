@@ -25,7 +25,7 @@ ${bold("Setup")}
   deploy                          Deploy this Scotty to the configured stage (--image ref)
   teardown                        Remove the stage from Cloudflare and its config
   doctor                          Check setup, sign-ins and the deployment
-  login chatgpt|github|claude     Sign in to an account sessions use
+  login <account>                 Sign in to chatgpt, github, claude or daytona
   skill                           Print the guide to hand your own agent
 
 ${bold("Sessions")}
@@ -103,10 +103,11 @@ matches. A later deploy without --image goes back to Scotty's image.`,
   doctor: `Usage: scotty doctor
 Check the config, Cloudflare Access, the Worker and each sign-in, and print the fix for each problem.
 Exits 3 when something required is missing.`,
-  login: `Usage: scotty login chatgpt|github|claude
+  login: `Usage: scotty login chatgpt|github|claude|daytona
 chatgpt   Opens the device-code page and waits for you to enter the code.
 github    Saves the token from \`gh auth token\`, or from stdin when piped.
 claude    Runs \`claude setup-token\` and saves the token, or reads it from stdin when piped.
+daytona   Saves the API key from stdin, or from DAYTONA_API_KEY, for sessions run --on daytona.
 Example: gh auth token | scotty login github`,
   new: `Usage: scotty new <owner/repo | https://github.com/owner/repo> <prompt> [--agent codex|claude] [--size name] [--on place] [--key key] [--session-key key]
 Start a session with Codex (the default) or Claude. --key makes retries idempotent.

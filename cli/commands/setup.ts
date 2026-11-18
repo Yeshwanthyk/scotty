@@ -6,6 +6,7 @@ import { version } from "../../src/version.js";
 import {
   ChatGptStatus,
   ClaudeStatus,
+  DaytonaStatus,
   GitHubStatus,
   List,
   Polled,
@@ -220,6 +221,23 @@ export const saveGitHub = (api: Api) =>
     });
   });
 
+export const saveDaytona = (api: Api) =>
+  Effect.gen(function* () {
+    const piped = process.stdin.isTTY ? "" : (yield* readStdin).trim();
+    const key = piped === "" ? (process.env["DAYTONA_API_KEY"] ?? "").trim() : piped;
+    if (key === "")
+      return yield* failure(
+        "signin",
+        "No Daytona API key: nothing was piped and DAYTONA_API_KEY is unset",
+        "Make a key at app.daytona.io, then: scotty login daytona < file",
+        3,
+      );
+    return yield* api("/api/credentials/daytona", DaytonaStatus, {
+      method: "POST",
+      body: { key },
+    });
+  });
+
 // oxlint-disable-next-line no-control-regex
 const ansi = /\u001b\[[0-9;?]*[A-Za-z]|\u001b\][^\u0007\u001b]*(\u0007|\u001b\\)/g;
 
@@ -342,10 +360,14 @@ const loginChatGpt = (api: Api) =>
 
 export { until };
 
-const loginTo = (account: "chatgpt" | "github" | "claude") =>
+const loginTo = (account: "chatgpt" | "github" | "claude" | "daytona") =>
   Effect.gen(function* () {
     const api = yield* withClient;
     if (account === "chatgpt") return yield* loginChatGpt(api);
+    if (account === "daytona") {
+      const saved = yield* saveDaytona(api);
+      return yield* output(saved, `${green("✓")} Daytona API key saved`);
+    }
     if (account === "claude") {
       const saved = yield* saveClaude(api);
       return yield* output(saved, `${green("✓")} Claude token saved${dim(until(saved.expiresAt))}`);
@@ -359,6 +381,6 @@ const loginTo = (account: "chatgpt" | "github" | "claude") =>
 
 export const login = Command.make(
   "login",
-  { account: Argument.Literals("account", ["chatgpt", "github", "claude"]) },
+  { account: Argument.Literals("account", ["chatgpt", "github", "claude", "daytona"]) },
   ({ account }) => loginTo(account),
 );

@@ -1,9 +1,11 @@
 import { sameImages, type PromptImage } from "../../protocol/prompt.js";
 import { cloudflarePlace } from "../places/cloudflare.js";
+import { daytonaPlace } from "../places/daytona.js";
 import {
   defaultPlace,
   type Exit as MachineExit,
   type Place,
+  PlaceFailed,
   type PlaceKind,
   type Size,
 } from "../places/place.js";
@@ -105,8 +107,19 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
       const id = () => log.state.created?.branch.slice("scotty/".length) ?? "";
       const context = yield* Effect.context<RuntimeContext | Cloudflare.DurableObjectState>();
 
+      const rawSnapshot: unknown = env["SCOTTY_DAYTONA_SNAPSHOT"];
+      const rawStage: unknown = env["ALCHEMY_STAGE"];
       const places = {
         cloudflare: cloudflarePlace(container, storage.raw.exports),
+        daytona: daytonaPlace({
+          key: (op) =>
+            credentials
+              .getByName("owner")
+              .daytonaKey()
+              .pipe(Effect.mapError(() => new PlaceFailed({ op }))),
+          snapshot: typeof rawSnapshot === "string" && rawSnapshot !== "" ? rawSnapshot : undefined,
+          stage: typeof rawStage === "string" ? rawStage : "",
+        }),
       } satisfies Record<typeof PlaceKind.Type, Place>;
       const where = () => places[log.state.created?.place ?? defaultPlace];
       class NoMachine extends Schema.TaggedError<NoMachine>()("NoMachine", {}) {}
@@ -114,7 +127,9 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         Effect.gen(function* () {
           const handle = log.state.place?.handle;
           if (handle === undefined) return yield* new NoMachine();
-          return where().port(handle, n);
+          return yield* where()
+            .port(handle, n)
+            .pipe(Effect.mapError(() => new NoMachine()));
         });
       let key: { session: string; bytes: Uint8Array<ArrayBuffer> } | undefined;
       const keyBytes = Effect.gen(function* () {
@@ -357,10 +372,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           switch (action.kind) {
             case "create": {
               if (!current(action.gen) || log.state.place !== undefined) return;
-              if (action.remove !== undefined)
-                yield* where()
-                  .remove(action.remove)
-                  .pipe(Effect.ignoreCause({ log: "Warn", message: "remove failed" }));
+              if (action.remove !== undefined) yield* where().remove(action.remove);
               if (!(yield* claimSlot(action.gen))) return;
               const connections = (yield* connectionsFor(action.gen))
                 .filter((connection) => connection.kind !== "inbound")

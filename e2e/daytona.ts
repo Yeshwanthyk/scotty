@@ -1,0 +1,154 @@
+import { Effect, Schema } from "effect";
+import {
+  access,
+  CliFailure,
+  client,
+  Conversation,
+  Created,
+  failure,
+  Reply,
+  target,
+  View,
+} from "../cli/client.js";
+import { daytonaApi } from "../src/places/daytona.js";
+import { fixtureRepo } from "../protocol/supervisor.js";
+import { agent, prompt, sessionAgent } from "./lib/agent.js";
+import { Log, waiter } from "./lib/wait.js";
+
+const Hatch = Schema.Struct({ url: Schema.String });
+const check = (ok: boolean, message: string) =>
+  ok ? Effect.void : Effect.fail(failure("daytona", message, "scotty doctor"));
+
+const server = (marker: string) => `import http from "node:http";
+http.createServer((q, s) => s.end("${marker}")).listen(8080, "0.0.0.0");
+`;
+
+const get = (url: string, token: string) =>
+  Effect.tryPromise({
+    try: async () => {
+      const response = await fetch(url, {
+        redirect: "manual",
+        headers: { "cf-access-token": token },
+        signal: AbortSignal.timeout(15000),
+      });
+      return { status: response.status, body: await response.text() };
+    },
+    catch: () => failure("network", `GET ${url} failed`, "scotty doctor"),
+  });
+
+const destroy = (handle: string) =>
+  Effect.tryPromise({
+    try: async () => {
+      const response = await fetch(`${daytonaApi}/sandbox/${encodeURIComponent(handle)}`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${process.env.DAYTONA_API_KEY ?? ""}` },
+      });
+      await response.body?.cancel();
+      return response.status;
+    },
+    catch: () => failure("network", "Daytona DELETE failed", "source work/dev-env.sh"),
+  });
+
+const program = Effect.gen(function* () {
+  if (process.env.DAYTONA_API_KEY === undefined)
+    return yield* failure("daytona", "DAYTONA_API_KEY is not set", "source work/dev-env.sh");
+  const url = yield* target(process.env.SCOTTY_URL);
+  const token = yield* access(url);
+  const request = client({ url, token });
+  const marker = `DAYTONA-${crypto.randomUUID().slice(0, 8)}`;
+  const start =
+    `echo ${marker} > marker.txt && echo ${btoa(server(marker))} | base64 -d > /workspace/server.mjs && ` +
+    "setsid nohup node /workspace/server.mjs > /dev/null 2>&1 < /dev/null &";
+  const session = yield* request("/api/sessions", Created, {
+    method: "POST",
+    key: crypto.randomUUID(),
+    body: {
+      title: `e2e daytona (${agent})`,
+      repo: fixtureRepo,
+      place: "daytona",
+      size: "standard-4",
+      ...sessionAgent,
+      prompt: prompt(
+        `Run exactly: \`${start}\`, then reply with only the word done.`,
+        `run ${start}\nsay done`,
+      ),
+    },
+  });
+  yield* check(session.place === "daytona", `Session was made on ${session.place}`);
+  const prefix = `/api/sessions/${session.id}`;
+  console.log(`Session ${session.id}`);
+  const poll = waiter(request, prefix);
+  const events = () => request(`${prefix}/log`, Log);
+  const handles = (log: typeof Log.Type) =>
+    log.flatMap((e) => (e.kind === "place.created" ? [e.handle] : []));
+  const saved = (turn: string) =>
+    poll(events, (log) => log.some((e) => e.kind === "save.done" && e.turn === turn));
+  const answer = (turn: string, text: string) =>
+    Effect.gen(function* () {
+      const req = crypto.randomUUID();
+      yield* request(`${prefix}/steer`, Reply, {
+        method: "POST",
+        key: req,
+        body: { req, turn, text },
+      });
+      yield* poll(events, (log) => log.some((e) => e.kind === "turn.ended" && e.turn === turn));
+      const conversation = yield* request(`${prefix}/conversation`, Conversation);
+      return conversation.turns.find((item) => item.id === req)?.assistant ?? "";
+    });
+  const stop = Effect.gen(function* () {
+    yield* request(`${prefix}/stop`, View, { method: "POST" });
+    return yield* poll(events, (log) => log.some((e) => e.kind === "place.paused"), {
+      stopped: "expected",
+    });
+  });
+  const cat = prompt(
+    "Run exactly: `cat marker.txt` and reply with its full output.",
+    "run cat marker.txt\nsay {{out}}",
+  );
+
+  yield* poll(events, (log) => log.some((e) => e.kind === "turn.ended" && e.turn === "0"));
+  const first = handles(yield* events());
+  yield* check(first.length === 1, `Expected one sandbox, saw ${first.length}`);
+  const view = yield* request(prefix, View);
+  yield* check(
+    view.session.display.size === "standard-2",
+    `Size ${view.session.display.size}, not standard-2`,
+  );
+  console.log(`Created: sandbox ${first[0]}, standard-4 fitted to standard-2`);
+
+  const hatch = yield* request(`${prefix}/hatch/8080`, Hatch);
+  const page = yield* poll(
+    () => get(`${hatch.url}/`, token),
+    (value) => value.status === 200,
+  );
+  yield* check(page.body.includes(marker), `Preview did not serve the marker: ${page.body}`);
+  console.log("Preview: port 8080 served through the Worker");
+
+  yield* saved("0");
+  yield* stop;
+  const woke = yield* answer("1", cat);
+  yield* check(woke.includes(marker), "Wake from disk lost marker.txt");
+  yield* check(handles(yield* events()).length === 1, "Wake from disk made a new sandbox");
+  console.log("Slept and woke: same sandbox, marker.txt kept");
+
+  yield* saved("1");
+  yield* stop;
+  const deleted = yield* destroy(first[0] ?? "");
+  yield* check(deleted < 300, `Daytona DELETE answered ${deleted}`);
+  const restored = yield* answer("2", cat);
+  yield* check(restored.includes(marker), "Restore after delete lost marker.txt");
+  const after = handles(yield* events());
+  yield* check(after.length === 2 && after[1] !== first[0], "Restore did not make a new sandbox");
+  yield* check(
+    !(yield* events()).some((e) => e.kind === "invariant.violated"),
+    "Invariant violated",
+  );
+  console.log(`Restored: sandbox deleted while asleep, new sandbox ${after[1]} kept marker.txt`);
+
+  yield* request(`${prefix}/stop`, View, { method: "POST" });
+});
+
+Effect.runPromise(program).catch((error: unknown) => {
+  console.error(error instanceof CliFailure ? error.message : "Daytona e2e failed");
+  process.exitCode = 1;
+});

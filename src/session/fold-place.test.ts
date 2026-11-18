@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { command } from "./commands.js";
-import { deadlines, fold, initial, type State } from "./fold.js";
+import { deadlines, fold, initial, resizeConflict, type State } from "./fold.js";
 import { sessionView } from "./view.js";
 import { check, created, make, start } from "./fold.fixture.js";
 import type { SessionEvent } from "./events.js";
@@ -265,6 +265,24 @@ describe("place lifecycle", () => {
     expect(state).toMatchObject({ phase: "provisioning", gen: 2, size: "standard-3" });
     expect(state.place).toBeUndefined();
     expect(command(state, sized)).toEqual({ kind: "create", gen: 2, remove: handle });
+  });
+
+  it("fits a size to the largest one the session's place makes", () => {
+    const made = run([make(1, "created", { ...created, place: "daytona", size: "standard-4" })]);
+    expect(made.size).toBe("standard-2");
+    const live = run([start, make(3, "place.created", { gen: 1, handle })], made);
+    expect(resizeConflict(live, "standard-3")).toBeUndefined();
+    const paused = run(
+      [
+        make(4, "container.stopped", { gen: 1, reason: "user" }),
+        make(5, "place.paused", { handle }),
+      ],
+      live,
+    );
+    const sized = make(6, "resume.requested", { size: "standard-3" });
+    const woke = run([sized], paused);
+    expect(woke).toMatchObject({ size: "standard-2", place: { handle, status: "live" } });
+    expect(command(woke, sized)).toEqual({ kind: "resume", gen: 2, handle });
   });
 
   it("stamps how long each step of a wake took", () => {

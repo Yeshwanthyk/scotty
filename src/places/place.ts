@@ -1,10 +1,29 @@
 import { Schema } from "effect";
 import type { Effect } from "effect";
 
-export const PlaceKind = Schema.Literals(["cloudflare"]);
+export const PlaceKind = Schema.Literals(["cloudflare", "daytona"]);
 export const defaultPlace: typeof PlaceKind.Type = "cloudflare";
 export const Size = Schema.Literals(["standard-1", "standard-2", "standard-3", "standard-4"]);
 export const defaultSize: typeof Size.Type = "standard-1";
+
+export const daytonaSizes = [
+  "standard-1",
+  "standard-2",
+] as const satisfies readonly (typeof Size.Type)[];
+/** The sizes each place can make, smallest first. */
+export const placeSizes: Record<typeof PlaceKind.Type, readonly (typeof Size.Type)[]> = {
+  cloudflare: Size.literals,
+  daytona: daytonaSizes,
+};
+/** The largest size `place` makes that is no bigger than `size`. */
+export const fitSize: (place: typeof PlaceKind.Type, size: typeof Size.Type) => typeof Size.Type = (
+  place,
+  size,
+) => {
+  const offered = placeSizes[place];
+  const wanted = Size.literals.indexOf(size);
+  return offered.findLast((item) => Size.literals.indexOf(item) <= wanted) ?? offered[0] ?? size;
+};
 
 export const ratesDated = "2026-10-05";
 export const sizeSpec: Record<
@@ -27,8 +46,21 @@ export const hourlyRate: (size: typeof Size.Type) => number = (size) => {
 };
 
 export class PlaceFailed extends Schema.TaggedError<PlaceFailed>()("PlaceFailed", {
-  op: Schema.Literals(["create", "pause", "resume", "remove", "status", "watch"]),
+  op: Schema.Literals(["create", "pause", "resume", "remove", "status", "watch", "port"]),
 }) {}
+
+/** Accepts the WebSocket a `fetch` with `Upgrade: websocket` answered with, if it has one. */
+export const acceptSocket: (response: object) => WebSocket | undefined = (response) => {
+  const candidate: unknown = Reflect.get(response, "webSocket");
+  if (
+    !(candidate instanceof WebSocket) ||
+    !("accept" in candidate) ||
+    typeof candidate.accept !== "function"
+  )
+    return undefined;
+  candidate.accept();
+  return candidate;
+};
 
 /** Names one machine (container, sandbox or VM) at a place. Not a secret. */
 export type Handle = string;
@@ -80,8 +112,8 @@ export type Exit =
  */
 export interface Place {
   /**
-   * Makes the machine for this session and generation, with the session's egress and the
-   * supervisor's key `key` (hex). Idempotent by session and gen: a retried create gets the
+   * Makes the machine for this session and generation, running and with the supervisor's key
+   * `key` (hex). Idempotent by session and gen: a retried create gets the
    * same handle back, and a new gen never gets a machine already reported gone.
    */
   readonly create: (input: {
@@ -98,7 +130,7 @@ export interface Place {
   readonly remove: (handle: Handle) => Effect.Effect<void, PlaceFailed>;
   readonly status: (handle: Handle) => Effect.Effect<"running" | "paused" | "gone", PlaceFailed>;
   /** HTTP and WebSocket to a port inside the machine: supervisor, saves, terminal, hatch. */
-  readonly port: (handle: Handle, port: number) => Port;
+  readonly port: (handle: Handle, port: number) => Effect.Effect<Port, PlaceFailed>;
   /**
    * Only where the place reports an exit as it happens. The outer effect arms the watch (it fails
    * when the machine can't be watched yet); the inner one waits for the exit.
