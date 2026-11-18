@@ -2,7 +2,7 @@ import { Clock, Effect, Fiber, FileSystem, Schedule, Schema, Stream } from "effe
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { fixtureRepo, Workspace } from "../../protocol/supervisor.js";
 import type { Agent } from "./agents/agent.js";
-import { tunnelPort } from "../../protocol/tunnel.js";
+import { tunnelPort, tunnelSocket } from "../../protocol/tunnel.js";
 import { processEnv } from "./runtime.js";
 
 export class WorkspaceError extends Schema.TaggedError<WorkspaceError>()("WorkspaceError", {
@@ -154,7 +154,17 @@ export const hasState = (agent: Agent, thread: string) => {
   );
 };
 
-export const tunnelBase = `http://127.0.0.1:${tunnelPort}`;
+const tunnelBase = `http://127.0.0.1:${tunnelPort}`;
+/** The base URL for a `.internal` host: itself where the place intercepts, else the tunnel. */
+export const internalUrl = (tunnel: boolean, host: string) =>
+  tunnel ? `${tunnelBase}/${host}` : `http://${host}`;
+/** What the agent's commands are told about the tunnel: gh dials the socket, the rest the port. */
+export const tunnelEnv = (tunnel: boolean) => {
+  const env: Record<string, string> = tunnel
+    ? { SCOTTY_TUNNEL: tunnelBase, SCOTTY_TUNNEL_SOCKET: tunnelSocket }
+    : {};
+  return env;
+};
 
 export const prepareWorkspace = (
   repo: string,
@@ -179,8 +189,7 @@ export const prepareWorkspace = (
     yield* run(["git", "check-ref-format", "--branch", branch], root);
     const dir = `${root}/repo`;
     const config = {
-      [`url.${tunnel ? `${tunnelBase}/github.internal` : "http://github.internal"}/api/git/.insteadOf`]:
-        "https://github.com/",
+      [`url.${internalUrl(tunnel, "github.internal")}/api/git/.insteadOf`]: "https://github.com/",
       "user.name": git.name,
       "user.email": git.email,
     };

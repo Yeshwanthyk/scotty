@@ -1,4 +1,5 @@
 import { BunServices } from "@effect/platform-bun";
+import { rmSync } from "node:fs";
 import { uptime } from "node:process";
 import { Effect, Option, Queue, Result, Schema } from "effect";
 import {
@@ -7,7 +8,7 @@ import {
   ToSupervisor,
   type ToSupervisorMessage,
 } from "../../protocol/supervisor.js";
-import { tunnelPort } from "../../protocol/tunnel.js";
+import { tunnelPort, tunnelSocket } from "../../protocol/tunnel.js";
 import { authorized, loadKey } from "./caller.js";
 import { mountTmpfs } from "./place.js";
 import { exit, onTerminate, processEnv } from "./runtime.js";
@@ -33,8 +34,9 @@ interface Server {
 }
 declare const Bun: {
   serve(options: {
-    port: number;
+    port?: number;
     hostname?: string;
+    unix?: string;
     fetch(request: Request, server: Server): Response | Promise<Response> | undefined;
     websocket?: {
       open(peer: Peer): void;
@@ -334,6 +336,8 @@ export const serve = async (
     hostname: "127.0.0.1",
     fetch: (request) => tunnel.fetch(request),
   });
+  rmSync(tunnelSocket, { force: true });
+  Bun.serve({ unix: tunnelSocket, fetch: (request) => tunnel.fetch(request) });
   listeningAt = Date.now();
   listeningAgeMs = uptime() * 1000;
   return (value: Output, gen?: number) =>

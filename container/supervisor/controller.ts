@@ -16,7 +16,8 @@ import {
   saveWorkspace,
   storeSave,
   storeSkills,
-  tunnelBase,
+  internalUrl,
+  tunnelEnv,
   WorkspaceError,
   writeMarker,
 } from "./workspace.js";
@@ -77,7 +78,9 @@ export class Controller {
               ...message.agent,
               mcp: message.agent.mcp?.map((server) => ({
                 ...server,
-                url: server.url.replace(/^http:\/\//, `${tunnelBase}/`),
+                url: server.url.replace(/^http:\/\/([^/]+)/, (_, host: string) =>
+                  internalUrl(true, host),
+                ),
               })),
             }
           : message.agent,
@@ -129,10 +132,7 @@ export class Controller {
           Scope.provide(scope),
         );
         const ready = yield* runner
-          .start(
-            { SCOTTY_HATCH: message.hatch, ...(tunnel ? { SCOTTY_TUNNEL: tunnelBase } : {}) },
-            message.resume?.threadId,
-          )
+          .start({ SCOTTY_HATCH: message.hatch, ...tunnelEnv(tunnel) }, message.resume?.threadId)
           .pipe(
             Effect.mapError((error) =>
               disk !== undefined && error.unresumable === true ? gone(error.message) : error,
