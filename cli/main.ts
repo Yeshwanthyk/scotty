@@ -7,7 +7,7 @@ import {
   defaultSize,
   KeyedPlace,
   PlaceKind,
-  placeKeys,
+  placeCatalog,
   Size,
   sizeShape,
 } from "../src/places/place.js";
@@ -115,7 +115,7 @@ Exits 3 when something required is missing.`,
 chatgpt   Opens the device-code page and waits for you to enter the code.
 github    Saves the token from \`gh auth token\`, or from stdin when piped.
 claude    Runs \`claude setup-token\` and saves the token, or reads it from stdin when piped.
-${KeyedPlace.literals.map((kind) => `${kind.padEnd(10)}Saves the API key from stdin, or from ${placeKeys[kind].env}, for sessions run --on ${kind}.`).join("\n")}
+${KeyedPlace.literals.map((kind) => `${kind.padEnd(10)}Saves the API key from stdin, or from ${placeCatalog[kind].key.env}, for sessions run --on ${kind}.`).join("\n")}
 Example: gh auth token | scotty login github`,
   new: `Usage: scotty new <owner/repo | https://github.com/owner/repo> <prompt> [--agent codex|claude] [--size name] [--on place] [--key key] [--session-key key]
 Start a session with Codex (the default) or Claude. --key makes retries idempotent.

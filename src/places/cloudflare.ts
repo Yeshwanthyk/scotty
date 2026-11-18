@@ -16,7 +16,7 @@ const tcpPort: (container: cf.Container, port: number) => Port = (container, por
   socket: (url, headers) =>
     upgrade(() =>
       container.getTcpPort(port).fetch(url, { headers: { ...headers, Upgrade: "websocket" } }),
-    ),
+    ).pipe(Effect.map((answer) => answer.socket)),
 });
 
 /**

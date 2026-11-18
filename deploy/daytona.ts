@@ -1,8 +1,13 @@
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
-import { daytonaApi, daytonaShapes, daytonaSnapshot } from "../src/places/daytona.js";
-import { placeCatalog, placeKeys } from "../src/places/place.js";
+import {
+  daytonaApi,
+  daytonaShapes,
+  daytonaSnapshot,
+  daytonaSnapshotBinding,
+} from "../src/places/daytona.js";
+import { placeCatalog } from "../src/places/place.js";
 import type { PlaceDeploy } from "./places.ts";
 
 export class DaytonaError extends Schema.TaggedError<DaytonaError>()("DaytonaError", {
@@ -153,10 +158,12 @@ const daytonaLeftovers = (key: string, stage: string) =>
 
 export const daytonaDeploy = {
   name: "Daytona",
-  env: placeKeys.daytona.env,
+  env: placeCatalog.daytona.key.env,
   prepare: (key, stage, image) => {
     const prefix = snapshotPrefix(stage, image);
-    return ensureSnapshots(key, prefix, image).pipe(Effect.as({ SCOTTY_DAYTONA_SNAPSHOT: prefix }));
+    return ensureSnapshots(key, prefix, image).pipe(
+      Effect.as({ [daytonaSnapshotBinding]: prefix }),
+    );
   },
   remove: removeDaytona,
   leftovers: daytonaLeftovers,

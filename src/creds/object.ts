@@ -34,7 +34,7 @@ import { searchText } from "../session/search.js";
 import { AgentKind } from "../session/events.js";
 import { AgentDefaults } from "../session/agents/agent-settings.js";
 import { Size } from "../places/place.js";
-import { placeKeyChecks } from "../places/index.js";
+import { checkPlaceKey } from "../places/index.js";
 import type { KeyedPlace } from "../places/place.js";
 import { repoKey } from "../http/start.js";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
@@ -1213,7 +1213,7 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
           ),
         setPlaceKey: (kind: typeof KeyedPlace.Type, apiKey: string) =>
           Effect.gen(function* () {
-            const httpStatus = yield* placeKeyChecks[kind](apiKey);
+            const httpStatus = yield* checkPlaceKey(kind, apiKey);
             if (httpStatus !== 200) return { status: "refused" as const, httpStatus };
             yield* sql`INSERT OR REPLACE INTO place_keys (kind, api_key) VALUES (${kind}, ${apiKey})`;
             return { status: "set" as const };

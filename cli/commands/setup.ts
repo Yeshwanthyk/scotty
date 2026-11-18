@@ -2,7 +2,7 @@ import { Effect, Exit, Option, Schema, Stream } from "effect";
 import { Argument, Command } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { BunServices } from "@effect/platform-bun";
-import { KeyedPlace, placeKeys } from "../../src/places/place.js";
+import { KeyedPlace, placeCatalog } from "../../src/places/place.js";
 import { version } from "../../src/version.js";
 import {
   ChatGptStatus,
@@ -224,7 +224,7 @@ export const saveGitHub = (api: Api) =>
 
 export const savePlaceKey = (api: Api, kind: typeof KeyedPlace.Type) =>
   Effect.gen(function* () {
-    const { env, site } = placeKeys[kind];
+    const { env, site } = placeCatalog[kind].key;
     const piped = process.stdin.isTTY ? "" : (yield* readStdin).trim();
     const key = piped === "" ? (process.env[env] ?? "").trim() : piped;
     if (key === "")

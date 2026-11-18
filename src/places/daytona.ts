@@ -19,15 +19,21 @@ export const daytonaShapes = {
   (typeof placeCatalog.daytona.sizes)[number],
   { cpu: number; memory: number; disk: number }
 >;
-/** The HTTP status Daytona answers a sandbox listing made with `key`. */
+export const daytonaSnapshotBinding = "SCOTTY_DAYTONA_SNAPSHOT";
+
+const drain = (response: Response) =>
+  Effect.promise(() => response.body?.cancel().catch(() => undefined) ?? Promise.resolve());
+
+/** The HTTP status Daytona answers a sandbox listing made with `key`, or 0 when it can't be reached. */
 export const checkDaytonaKey = (key: string) =>
   Effect.tryPromise(() =>
     fetch(`${daytonaApi}/sandbox?labels=${encodeURIComponent("{}")}`, {
       headers: { authorization: `Bearer ${key}` },
     }),
   ).pipe(
-    Effect.tap((response) => Effect.promise(() => response.body?.cancel() ?? Promise.resolve())),
+    Effect.tap(drain),
     Effect.map((response) => response.status),
+    Effect.orElseSucceed(() => 0),
   );
 export const daytonaSnapshot = (prefix: string, size: typeof Size.Type) => `${prefix}-${size}`;
 
@@ -47,6 +53,8 @@ const phases = new Map<string, Phase>([
   ["creating", "rising"],
   ["restoring", "rising"],
   ["pending_build", "rising"],
+  ["destroying", "gone"],
+  ["destroyed", "gone"],
   ["stopping", "falling"],
   ["archiving", "falling"],
   ["stopped", "resting"],
@@ -57,7 +65,11 @@ const phase = (sandbox: typeof Sandbox.Type | undefined) => {
     sandbox === undefined
       ? "gone"
       : (phases.get(sandbox.state) ??
-        (sandbox.state === "error" && sandbox.recoverable === true ? "recoverable" : "gone"));
+        (sandbox.state !== "error"
+          ? "rising"
+          : sandbox.recoverable === true
+            ? "recoverable"
+            : "gone"));
   return known;
 };
 const label = (session: string, gen: number) => ({ "scotty-session": `${session}/${gen}` });
@@ -71,7 +83,7 @@ export const daytonaPlace: (input: {
   readonly key: (op: Op) => Effect.Effect<string, PlaceFailed>;
   readonly env: Readonly<Record<string, unknown>>;
 }) => Place = ({ key, env }) => {
-  const rawSnapshot = env["SCOTTY_DAYTONA_SNAPSHOT"];
+  const rawSnapshot = env[daytonaSnapshotBinding];
   const snapshot = typeof rawSnapshot === "string" && rawSnapshot !== "" ? rawSnapshot : undefined;
   const rawStage = env["ALCHEMY_STAGE"];
   const stage = typeof rawStage === "string" ? rawStage : "";
@@ -96,7 +108,7 @@ export const daytonaPlace: (input: {
         catch: () => new PlaceFailed({ op }),
       });
       if (response.ok) return response;
-      yield* Effect.promise(() => response.body?.cancel() ?? Promise.resolve());
+      yield* drain(response);
       if (response.status === 404) return undefined;
       yield* Effect.logWarning("Daytona refused", { op, status: response.status });
       return yield* new PlaceFailed({ op });
@@ -104,11 +116,7 @@ export const daytonaPlace: (input: {
   const act = (op: Op, path: string, method: string) =>
     send(op, path, { method }).pipe(
       Effect.flatMap((response) =>
-        response === undefined
-          ? Effect.succeed(false)
-          : Effect.promise(() => response.body?.cancel() ?? Promise.resolve()).pipe(
-              Effect.as(true),
-            ),
+        response === undefined ? Effect.succeed(false) : drain(response).pipe(Effect.as(true)),
       ),
     );
   const read = <A, I>(
@@ -199,12 +207,17 @@ export const daytonaPlace: (input: {
             catch: () => new PortFailed(),
           });
         return init?.body instanceof ReadableStream
-          ? Effect.flatMap(preview(handle, port), once)
+          ? preview(handle, port).pipe(
+              Effect.flatMap(once),
+              Effect.tap((response) =>
+                Effect.sync(() => {
+                  if (response.status === 401) previews.delete(`${handle}:${port}`);
+                }),
+              ),
+            )
           : fresh(once, (response) =>
               response.status === 401
-                ? Effect.promise(() => response.body?.cancel() ?? Promise.resolve()).pipe(
-                    Effect.as(true),
-                  )
+                ? drain(response).pipe(Effect.as(true))
                 : Effect.succeed(false),
             );
       },
@@ -215,8 +228,8 @@ export const daytonaPlace: (input: {
             upgrading.set("upgrade", "websocket");
             return upgrade(() => fetch(at(target, url), { headers: upgrading }));
           },
-          (socket) => Effect.succeed(socket === undefined),
-        ),
+          (answer) => Effect.succeed(answer.status === 401),
+        ).pipe(Effect.map((answer) => answer.socket)),
     } satisfies Port;
   };
   return {

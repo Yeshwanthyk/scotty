@@ -6,30 +6,33 @@ export const Size = Schema.Literals(["standard-1", "standard-2", "standard-3", "
 export const defaultSize: typeof Size.Type = "standard-1";
 
 /**
- * What is fixed about each place: the sizes it makes, smallest first, and whether the supervisor
+ * What is fixed about each place: the sizes it makes, smallest first; whether the supervisor
  * reaches the Worker through its own socket because the place can't intercept the machine's
- * requests to `github.internal` and the rest.
+ * requests to `github.internal` and the rest; and, for a place that acts with the owner's API
+ * key, where `scotty login <place>` finds that key and what it looks like.
  */
 export const placeCatalog = {
   cloudflare: { sizes: Size.literals, tunnel: false },
-  daytona: { sizes: ["standard-1", "standard-2"], tunnel: true },
-} as const satisfies Record<
-  typeof PlaceKind.Type,
-  { readonly sizes: readonly (typeof Size.Type)[]; readonly tunnel: boolean }
->;
-
-/** The places that act with an API key the owner saves with `scotty login <place>`. */
-export const KeyedPlace = Schema.Literals(["daytona"]);
-export const placeKeys = {
   daytona: {
-    env: "DAYTONA_API_KEY",
-    pattern: /^dtn_[A-Za-z0-9_-]{20,200}$/,
-    site: "app.daytona.io",
+    sizes: ["standard-1", "standard-2"],
+    tunnel: true,
+    key: { env: "DAYTONA_API_KEY", pattern: /^dtn_[A-Za-z0-9_-]{20,200}$/, site: "app.daytona.io" },
   },
 } as const satisfies Record<
-  typeof KeyedPlace.Type & typeof PlaceKind.Type,
-  { readonly env: string; readonly pattern: RegExp; readonly site: string }
+  typeof PlaceKind.Type,
+  {
+    readonly sizes: readonly (typeof Size.Type)[];
+    readonly tunnel: boolean;
+    readonly key?: { readonly env: string; readonly pattern: RegExp; readonly site: string };
+  }
 >;
+type Catalog = typeof placeCatalog;
+type WithKey = {
+  [K in keyof Catalog]: Catalog[K] extends { readonly key: object } ? K : never;
+}[keyof Catalog];
+/** The places with a `key` in the catalog. */
+export const KeyedPlace = Schema.Literals(["daytona"] as const satisfies readonly WithKey[]);
+
 /** The largest size `place` makes that is no bigger than `size`. */
 export const fitSize: (place: typeof PlaceKind.Type, size: typeof Size.Type) => typeof Size.Type = (
   place,
@@ -72,25 +75,37 @@ const acceptSocket = (response: object) => {
     !(candidate instanceof WebSocket) ||
     !("accept" in candidate) ||
     typeof candidate.accept !== "function"
-  )
+  ) {
+    const body: unknown = Reflect.get(response, "body");
+    if (body instanceof ReadableStream) body.cancel().catch(() => undefined);
     return undefined;
+  }
   candidate.accept();
   return candidate;
 };
 
 /**
- * The WebSocket a `fetch` with `Upgrade: websocket` answered with, accepted, or undefined when the
- * far end refused the upgrade. Interrupted before the answer, it closes the socket when it opens.
+ * What a `fetch` with `Upgrade: websocket` answered: its status, and its WebSocket, accepted, unless
+ * the far end refused the upgrade. Interrupted before the answer, it closes the socket when it opens.
  */
 export const upgrade: (
   open: () => Promise<object>,
-) => Effect.Effect<WebSocket | undefined, PortFailed> = (open) =>
+) => Effect.Effect<
+  { readonly status: number; readonly socket: WebSocket | undefined },
+  PortFailed
+> = (open) =>
   Effect.callback((resume) => {
     let interrupted = false;
     open().then(
       (response) => {
-        if (interrupted) acceptSocket(response)?.close();
-        else resume(Effect.succeed(acceptSocket(response)));
+        try {
+          const socket = acceptSocket(response);
+          const status: unknown = Reflect.get(response, "status");
+          if (interrupted) socket?.close();
+          else resume(Effect.succeed({ status: typeof status === "number" ? status : 0, socket }));
+        } catch {
+          if (!interrupted) resume(Effect.fail(new PortFailed()));
+        }
       },
       () => {
         if (!interrupted) resume(Effect.fail(new PortFailed()));

@@ -125,6 +125,7 @@ export class TunnelServer {
     } catch {
       if (!signal.aborted) send(encodeFrame(id, FrameKind.abort));
     } finally {
+      this.open.get(id)?.body?.end();
       this.open.delete(id);
     }
   }

@@ -94,6 +94,7 @@ export class Credit {
 export const inbox = (granted: (bytes: number) => void, cancelled: () => void) => {
   const queue: Uint8Array[] = [];
   let ended = false;
+  let dropped = false;
   let failed: Error | undefined;
   let waiting: (() => void) | undefined;
   const wake = () => {
@@ -117,7 +118,10 @@ export const inbox = (granted: (bytes: number) => void, cancelled: () => void) =
       },
       cancel: () => {
         ended = true;
+        dropped = true;
+        const held = queue.reduce((total, chunk) => total + chunk.byteLength, 0);
         queue.length = 0;
+        if (held > 0) granted(held);
         cancelled();
       },
     },
@@ -126,6 +130,7 @@ export const inbox = (granted: (bytes: number) => void, cancelled: () => void) =
   return {
     stream,
     push: (chunk: Uint8Array) => {
+      if (dropped) return granted(chunk.byteLength);
       if (ended || failed !== undefined) return;
       queue.push(chunk.slice());
       wake();

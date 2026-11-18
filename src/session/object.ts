@@ -106,7 +106,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
       const id = () => log.state.created?.branch.slice("scotty/".length) ?? "";
       const context = yield* Effect.context<RuntimeContext | Cloudflare.DurableObjectState>();
 
-      const places = makePlaces({
+      const placeOf = makePlaces({
         container,
         exports: storage.raw.exports,
         env,
@@ -114,10 +114,15 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           credentials
             .getByName("owner")
             .placeKey(kind)
-            .pipe(Effect.mapError(() => new PlaceFailed({ op }))),
+            .pipe(
+              Effect.tapError(() =>
+                Effect.logError(`No ${kind} API key: run scotty login ${kind}`),
+              ),
+              Effect.mapError(() => new PlaceFailed({ op })),
+            ),
       });
       const kind = () => log.state.created?.place ?? defaultPlace;
-      const where = () => places[kind()];
+      const where = () => placeOf(kind());
       class NoMachine extends Schema.TaggedError<NoMachine>()("NoMachine", {}) {}
       const port = (n: number) =>
         Effect.gen(function* () {

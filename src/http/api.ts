@@ -7,7 +7,7 @@ import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import type * as Cloudflare from "@alchemy.run/cloudflare";
 import { AgentKind } from "../session/events.js";
-import { KeyedPlace, PlaceKind, placeKeys, Size } from "../places/place.js";
+import { KeyedPlace, PlaceKind, placeCatalog, Size } from "../places/place.js";
 import { maxSearch, SearchQuery } from "../session/search.js";
 import { repoStats, StatsWindow } from "../session/stats.js";
 import {
@@ -227,16 +227,24 @@ export function apiHandler(
       const kind = keyed.value;
       const hint = `scotty login ${kind}`;
       const body = yield* Schema.decodeUnknownEffect(
-        Schema.Struct({ key: Schema.String.check(Schema.isPattern(placeKeys[kind].pattern)) }),
+        Schema.Struct({
+          key: Schema.String.check(Schema.isPattern(placeCatalog[kind].key.pattern)),
+        }),
       )(yield* request.json).pipe(
         Effect.catchTag("SchemaError", () =>
-          bad(`Expected a ${kind} API key from ${placeKeys[kind].site}`, 400, hint),
+          bad(`Expected a ${kind} API key from ${placeCatalog[kind].key.site}`, 400, hint),
         ),
       );
       if (HttpServerResponse.isHttpServerResponse(body)) return body;
       const result = yield* credential.setPlaceKey(kind, body.key);
       if (result.status === "refused")
-        return yield* bad(`${kind} answered HTTP ${result.httpStatus}`, 400, hint);
+        return yield* bad(
+          result.httpStatus === 0
+            ? `${kind} could not be reached`
+            : `${kind} answered HTTP ${result.httpStatus}`,
+          result.httpStatus === 0 ? 502 : 400,
+          hint,
+        );
       return yield* HttpServerResponse.json(result);
     }
     if (url.pathname === "/api/version" && request.method === "GET")
