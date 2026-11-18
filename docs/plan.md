@@ -84,6 +84,7 @@ Ship each piece as it passes, through a PR to `main`, then deploy to `scotty.yes
 | D1   | Daytona place                   | L1, W1, E1     | built    |
 | B1   | Boat place                      | L1, W1, E1     | todo     |
 | R3   | Where a session runs            | R2             | todo     |
+| M1   | Move a local session in         | D1             | todo     |
 | Z1   | The agent asks for more         | S6             | todo     |
 
 ### C1: ChatGPT refresh and sign-out
@@ -165,7 +166,7 @@ Ship each piece as it passes, through a PR to `main`, then deploy to `scotty.yes
 
 - **In scope:** one module each, `keeps: "disk"`, on the provider's API with its key in the Creds DO; hatch and terminal through `port`; traffic back to the Worker through the supervisor's tunnel.
 - **Done when:** `e2e daytona` / `e2e boat` create a scripted session, steer it, sleep it, wake it from disk (no restore), and open a hatch preview through the Worker; a sandbox deleted while paused wakes by restore.
-- **Notes (Daytona, 2026-11-18):** built on `daytona-place`; design.md "Places" has the facts. `/egress` and its tokens were replaced by the supervisor tunnel (design.md "Places"), so E1's mint and revoke are gone. Sizes fit per place in the fold (`fitSize`); `e2e daytona` asks for `standard-4` and expects `standard-2`. The create now fails, and is retried, when removing a gone handle fails, which closes L1's leak note. Run on stage `main` (2026-11-18): `e2e daytona` passed (create fitted to `standard-2`, hatch preview, sleep and wake on the same sandbox, restore after the sandbox was deleted while asleep), and `e2e core` and `github` passed. The first runs failed because the e2e's stop matched an earlier `place.paused` and deleted a sandbox that was still running (409); `stop` now waits for a new pause, and `pause` reports paused only once Daytona says stopped. Boat is not started.
+- **Notes (Daytona, 2026-11-18):** built on `daytona-place`; design.md "Places" has the facts. `/egress` and its tokens were replaced by the supervisor tunnel (design.md "Places"), so E1's mint and revoke are gone. Sizes fit per place in the fold (`fitSize`); `e2e daytona` asks for `standard-4` and expects `standard-2`. The create now fails, and is retried, when removing a gone handle fails, which closes L1's leak note. Run on stage `main` (2026-11-18): `e2e daytona` passed (create fitted to `standard-2`, hatch preview, sleep and wake on the same sandbox, restore after the sandbox was deleted while asleep), and `e2e core` and `github` passed. The first runs failed because the e2e's stop matched an earlier `place.paused` and deleted a sandbox that was still running (409); `stop` now waits for a new pause, and `pause` reports paused only once Daytona says stopped. Boat is not started. Later on `main` (2026-11-18): the tunnel had never carried a frame. Workers delivers binary WebSocket messages as `Blob` from compatibility date 2026-03-17, so each frame hit the text decoder and closed the link; the link now sets `binaryType`. The files handler needs `Content-Length`, which the tunnel now keeps. With credit flow control, `e2e tunnel` cloned `torvalds/linux` (300 MB of `.git`) and uploaded 20 MB in 102 s with no drops; `e2e daytona`, `github --place daytona` (gh through the tunnel socket), `github` and `core` passed, and Daytona listed no sandboxes afterwards. A failed e2e leaves its sandbox until its session is removed.
 
 ### R2: runners on the owner's boxes
 
@@ -174,6 +175,14 @@ Ship each piece as it passes, through a PR to `main`, then deploy to `scotty.yes
 - **Spike first:** a DO holds the supervisor WebSocket through the tunnel for an hour with the resend protocol intact; result in `design.md`.
 - **In scope:** the above; Settings → Runners (name, online, last seen, sessions running, limit); `scotty runners`; `scotty new --on <name>`; `container.stopped {reason: gone}` when a runner stops answering.
 - **Done when:** `e2e runner` runs a scripted session on `slumbers`, steers it, sleeps and wakes it, and opens a hatch preview through the Worker; no real token appears on the box outside the agents' own exceptions. A second `PUT /s/:id` leaves one container. After the runner's name is removed and the stage deployed, its hostname refuses the old service token.
+
+### M1: move a local session in
+
+- **Why:** the owner starts work in Codex or Claude on this machine and wants it to keep going in a sandbox with one command.
+- **Read first:** `design.md` "Places", the "Moving a local session in" item; `container/supervisor/workspace.ts` (`saveScript`, `restoreScript`).
+- **Spike first:** the pinned Codex resumes a rollout copied from a newer local Codex under another `cwd`; Claude resumes a transcript moved to `projects/-workspace-repo/`. Result in `design.md`.
+- **In scope:** `scotty move`, `POST /api/sessions/move`, `created.moved` in the fold, and the e2e below.
+- **Done when:** `e2e move` takes the save tar of a finished scripted session, moves it into a new session on Daytona, and the new session's first turn sees the old turn's file and conversation; a `--real` run from this machine moves a live Codex thread and it answers a follow-up.
 
 ### R3: where a session runs
 

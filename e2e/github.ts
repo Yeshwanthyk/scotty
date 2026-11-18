@@ -156,7 +156,8 @@ const program = Effect.gen(function* () {
     const deleted = yield* gh(["-X", "DELETE", `repos/${repo}/git/refs/heads/${name}`]);
     yield* check(deleted.ok, `Could not delete ${name}`);
   }
-  const pauses = (log: typeof Log.Type) => log.filter((e) => e.kind === "place.paused").length;
+  const pauses = (log: typeof Log.Type) =>
+    log.filter((e) => e.kind === "place.paused" || e.kind === "place.gone").length;
   const before = pauses(yield* request(`${prefix}/log`, Log));
   yield* request(`${prefix}/stop`, View, { method: "POST" });
   yield* poll(
