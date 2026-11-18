@@ -24,8 +24,6 @@ type StartState =
   | { status: "failed"; code: string; message: string };
 type Sender = (output: Output, gen?: number) => void;
 
-// One container controller owns start/runner/request outcomes for its fixed gen.
-// State changes precede outside work; resends observe the same in-flight result.
 export class Controller {
   private send: Sender = () => {};
   private gen: number | undefined;
@@ -35,11 +33,11 @@ export class Controller {
   private actions: Actions | undefined;
   private scope: Scope.Closeable | undefined;
   private readonly requests = new Requests();
-  bind(send: Sender): void {
+  bind(send: Sender) {
     this.send = send;
   }
 
-  private start(message: Start): Effect.Effect<void> {
+  private start(message: Start) {
     return Effect.gen({ self: this }, function* () {
       if (this.startState !== undefined) {
         if (this.startState.status === "ready") {
@@ -144,14 +142,10 @@ export class Controller {
         { type: "agent_ready", kind: outcome.value.kind, session: outcome.value.session },
         message.gen,
       );
-    });
+    }) satisfies Effect.Effect<void>;
   }
 
-  private request(
-    req: string,
-    action: Effect.Effect<void, AgentError>,
-    gen: number,
-  ): Effect.Effect<void> {
+  private request(req: string, action: Effect.Effect<void, AgentError>, gen: number) {
     return this.requests.run(req, action).pipe(
       Effect.matchEffect({
         onFailure: (error) =>
@@ -160,45 +154,54 @@ export class Controller {
           ),
         onSuccess: () => Effect.sync(() => this.send({ type: "delivered", req }, gen)),
       }),
-    );
+    ) satisfies Effect.Effect<void>;
   }
-  save(gen: number): Effect.Effect<Uint8Array, WorkspaceError> {
+  save(gen: number) {
     const state = this.startState;
     if (state?.status !== "ready" || this.agent === undefined || this.gen !== gen)
-      return Effect.fail(new WorkspaceError({ message: "workspace not ready" }));
+      return Effect.fail(
+        new WorkspaceError({ message: "workspace not ready" }),
+      ) satisfies Effect.Effect<Uint8Array, WorkspaceError>;
     return saveWorkspace(state.ready.commit, this.agent, state.ready.session).pipe(
       Effect.provide(BunServices.layer),
-    );
+    ) satisfies Effect.Effect<Uint8Array, WorkspaceError>;
   }
-  load(tar: Uint8Array): Effect.Effect<void, WorkspaceError> {
-    return this.startState === undefined
-      ? storeSave(tar).pipe(Effect.provide(BunServices.layer))
-      : Effect.fail(new WorkspaceError({ message: "workspace already started" }));
+  load(tar: Uint8Array) {
+    return (
+      this.startState === undefined
+        ? storeSave(tar).pipe(Effect.provide(BunServices.layer))
+        : Effect.fail(new WorkspaceError({ message: "workspace already started" }))
+    ) satisfies Effect.Effect<void, WorkspaceError>;
   }
-  // A start sent again after a reconnect finds the skills already installed.
-  skills(commit: string, tarball: Uint8Array): Effect.Effect<void, WorkspaceError> {
-    return this.startState === undefined
-      ? storeSkills(commit, tarball).pipe(Effect.provide(BunServices.layer))
-      : Effect.void;
+  skills(commit: string, tarball: Uint8Array) {
+    return (
+      this.startState === undefined
+        ? storeSkills(commit, tarball).pipe(Effect.provide(BunServices.layer))
+        : Effect.void
+    ) satisfies Effect.Effect<void, WorkspaceError>;
   }
-  receive(message: ToSupervisorMessage): Effect.Effect<void> {
-    if (message.type === "start") return this.start(message);
-    if (message.type === "ack") return Effect.void;
+  receive(message: ToSupervisorMessage) {
+    if (message.type === "start") return this.start(message) satisfies Effect.Effect<void>;
+    if (message.type === "ack") return Effect.void satisfies Effect.Effect<void>;
     const req = message.req;
     if (this.runner === undefined || this.actions === undefined || this.gen !== message.gen) {
       const code = "not_ready";
-      return Effect.sync(() => this.send({ type: "error", req, code, message: code }, message.gen));
+      return Effect.sync(() =>
+        this.send({ type: "error", req, code, message: code }, message.gen),
+      ) satisfies Effect.Effect<void>;
     }
-    return message.type === "prompt"
-      ? this.request(
-          req,
-          this.actions.run(
-            this.runner
-              .send(req, message.turn, message.text, message.images ?? [])
-              .pipe(Effect.asVoid),
-          ),
-          message.gen,
-        )
-      : this.request(req, this.actions.run(this.runner.interrupt(req)), message.gen);
+    return (
+      message.type === "prompt"
+        ? this.request(
+            req,
+            this.actions.run(
+              this.runner
+                .send(req, message.turn, message.text, message.images ?? [])
+                .pipe(Effect.asVoid),
+            ),
+            message.gen,
+          )
+        : this.request(req, this.actions.run(this.runner.interrupt(req)), message.gen)
+    ) satisfies Effect.Effect<void>;
   }
 }

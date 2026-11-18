@@ -8,10 +8,8 @@ import { titleFrom } from "../session/title.js";
 
 type Credential = ReturnType<Cloudflare.DurableObject<CredsObject>["getByName"]>;
 
-// The start's retry key, and so the request id of the prompt a steered run sends.
 export const runRequest = (id: string) => `run:${id}`;
 
-// The run id names a start, prompt or stop request, so retries keep its first answer.
 export function fireRun(
   sessions: Cloudflare.DurableObject<SessionObject>,
   credential: Credential,
@@ -66,8 +64,6 @@ export function fireRun(
               retry: runRequest(id),
               origin: { kind: "automation", automation: run.automation, run: id, ...key },
             });
-      // A duplicate may be the first create or a later steer. The creator's request in the
-      // session log tells which, even when the reply or the run's settlement was lost.
       const created =
         started.kind === "duplicate"
           ? (yield* sessions.getByName(started.id).log()).some(
@@ -105,8 +101,6 @@ export function fireRun(
   });
 }
 
-// A delivery to a connection that automations listen on goes to them, one run each; the
-// connection then starts nothing itself. A GitHub connection only feeds automations.
 export function automationDelivery(
   sessions: Cloudflare.DurableObject<SessionObject>,
   credential: Credential,
@@ -125,7 +119,6 @@ export function automationDelivery(
       });
       return yield* HttpServerResponse.json({ status: "skipped", reason: "no_automation" });
     }
-    // A received run without an answer yet is fired again; the run id keeps that a no-op.
     const answered = yield* Effect.forEach(
       runs,
       (run) =>

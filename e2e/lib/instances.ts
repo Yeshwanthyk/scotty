@@ -7,7 +7,6 @@ const Instances = Schema.fromJsonString(
   Schema.Array(Schema.Struct({ name: Schema.String, state: Schema.String })),
 );
 
-// The stage's container instances as Cloudflare lists them, named by session id.
 export const instances = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const app = process.env.SCOTTY_CONTAINER_APP_ID ?? "";

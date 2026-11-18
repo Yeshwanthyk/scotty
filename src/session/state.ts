@@ -25,14 +25,12 @@ type Turn = { readonly turn: string; readonly codexTurn: string; readonly state:
 export type State = {
   readonly phase: "provisioning" | "running" | "stopped" | "failed";
   readonly lastSeq: number;
-  // When the owner or the agent last did something worth sorting by: a prompt, a turn's end.
   readonly activeAt: number;
   readonly gen: number | undefined;
   readonly startSeq: number;
   readonly stopSeq: number;
   readonly saveSeq: number;
   readonly readySeq: number;
-  // The base commit from the first workspace; set means later generations resume.
   readonly commit: string | undefined;
   readonly hello: boolean;
   readonly connected: boolean;
@@ -44,7 +42,6 @@ export type State = {
   readonly boot: string | undefined;
   readonly agentSession: string | undefined;
   readonly failure: { readonly code: string; readonly retryable: boolean } | undefined;
-  // Why the session last stopped; `agent` is the agent exiting in a running container.
   readonly stop:
     | {
         readonly reason: typeof StopReason.Type | "agent";
@@ -54,7 +51,6 @@ export type State = {
     | undefined;
   readonly lastHelloSeq: number;
   readonly lastRedialSeq: number;
-  // The idle timeout the Session DO is checking; 0 once a prompt, turn or use overtakes it.
   readonly idleSeq: number;
   readonly currentTurn: string;
   readonly turns: readonly Turn[];
@@ -62,18 +58,15 @@ export type State = {
   readonly files: readonly (AttachedFile & { readonly turn: string })[];
   readonly pending: readonly Pending[];
   readonly created: Extract<SessionEvent, { kind: "created" }> | undefined;
-  // The size every start uses: the created one, until a resume names another.
   readonly size: typeof Size.Type;
 };
 
-// The request id the first prompt goes in under once the first workspace is ready.
-export const firstReq = (
+export const firstReq: (
   created: Extract<SessionEvent, { kind: "created" }>,
   gen: number,
-): string => created.req ?? `initial:${gen}`;
+) => string = (created, gen) => created.req ?? `initial:${gen}`;
 
-// Stopped and failed sessions hold no connection, deadline or pending request.
-export const live = (state: State): boolean =>
+export const live: (state: State) => boolean = (state) =>
   state.phase !== "failed" && state.phase !== "stopped";
 
 export const initial: State = {

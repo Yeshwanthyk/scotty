@@ -1,8 +1,3 @@
-// A stand-in for `codex app-server --listen stdio://` that e2e sessions run instead of Codex, so
-// they need no ChatGPT account and don't depend on what a model says. It speaks the messages
-// the supervisor's Codex adapter uses, in the shapes Codex 0.157.1 sends them, and reads each
-// prompt as a script (script.ts). Its messages are typed by codex-protocol.ts, generated from
-// that Codex, so typecheck holds them to its protocol.
 import { createHash } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -68,7 +63,6 @@ const SteerParams = Schema.Struct({
   input: Input,
 });
 const InterruptParams = Schema.Struct({ threadId: Schema.String, turnId: Schema.String });
-// Typecheck fails unless every request the pinned Codex's protocol allows decodes.
 type Covers<Sent, Read> = [Sent] extends [Read] ? true : never;
 const covers: [
   Covers<ThreadStartParams, typeof ThreadParams.Encoded>,
@@ -113,7 +107,10 @@ const completed = (turn: Turn, item: ThreadItem) =>
     turnId: turn.id,
     completedAtMs: Date.now(),
   });
-const turnBody = (turn: Turn, status: "inProgress" | "completed" | "interrupted"): TurnBody => ({
+const turnBody: (turn: Turn, status: "inProgress" | "completed" | "interrupted") => TurnBody = (
+  turn,
+  status,
+) => ({
   id: turn.id,
   items: status === "inProgress" ? [] : turn.items,
   itemsView: status === "inProgress" ? "notLoaded" : "summary",
@@ -123,13 +120,11 @@ const turnBody = (turn: Turn, status: "inProgress" | "completed" | "interrupted"
   completedAt: status === "inProgress" ? null : seconds(),
   durationMs: status === "inProgress" ? null : (seconds() - turn.startedAt) * 1000,
 });
-// The rollout file is what the supervisor saves and restores; resume needs it back.
 const rollout = (id: string) => `${sessions}/rollout-scripted-${id}.jsonl`;
 const record = (id: string, entry: object) =>
   appendFileSync(rollout(id), `${JSON.stringify(entry)}\n`);
 
 const Entry = Schema.fromJsonString(Schema.Struct({ input: Schema.String }));
-// What the thread remembers survives a stop only through the restored rollout file.
 const recall = (id: string) => () =>
   readFileSync(rollout(id), "utf8")
     .split("\n")
@@ -154,7 +149,7 @@ const userMessage = (turn: Turn, text: string) => {
 
 const say = (turn: Turn, text: string) => {
   const id = `msg_${crypto.randomUUID().replaceAll("-", "")}`;
-  const message = (text: string): ThreadItem => ({
+  const message: (text: string) => ThreadItem = (text) => ({
     type: "agentMessage",
     id,
     text,
@@ -164,7 +159,6 @@ const say = (turn: Turn, text: string) => {
     questions: null,
   });
   started(turn, message(""));
-  // Real replies stream in pieces.
   for (let at = 0; at < text.length; at += 4)
     notify("item/agentMessage/delta", {
       threadId: turn.thread,
@@ -180,10 +174,10 @@ const say = (turn: Turn, text: string) => {
 const run = async (turn: Turn, next: Extract<Step, { kind: "run" | "call" }>) => {
   const command = next.command;
   const id = `call_${crypto.randomUUID().replaceAll("-", "")}`;
-  const execution = (
+  const execution: (
     status: "inProgress" | "completed" | "failed" | "declined",
     result: { output: string; exitCode: number; durationMs: number } | undefined,
-  ): ThreadItem => ({
+  ) => ThreadItem = (status, result) => ({
     type: "commandExecution",
     id,
     pluginId: null,
@@ -251,7 +245,7 @@ const text = (input: typeof Input.Type) =>
     )
     .join("\n");
 
-const threadBody = (id: string): Thread => ({
+const threadBody: (id: string) => Thread = (id) => ({
   id,
   sessionId: id,
   forkedFromId: null,
@@ -285,7 +279,7 @@ const threadBody = (id: string): Thread => ({
 const handle = (message: typeof Message.Type) => {
   const { id, method } = message;
   if (method === undefined) return;
-  if (id === undefined) return; // notifications such as `initialized` need nothing
+  if (id === undefined) return;
   const decode = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) =>
     Schema.decodeUnknownOption(schema)(message.params);
   switch (method) {

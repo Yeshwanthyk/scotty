@@ -4,10 +4,12 @@ import { ContainerDestroyFailed, ContainerStartFailed, type Place } from "./plac
 
 import { isLoopback } from "../loopback.js";
 
-export const cloudflarePlace = (container: cf.Container, exports: object): Place => ({
+export const cloudflarePlace: (container: cf.Container, exports: object) => Place = (
+  container,
+  exports,
+) => ({
   start: (input) =>
     Effect.gen(function* () {
-      // A new container needs the interceptor; Alchemy's wrapper drops this promise.
       const loopback: unknown = Reflect.get(exports, "default");
       if (!isLoopback(loopback)) return yield* Effect.die("no ctx.exports.default");
       const fetcher = loopback({ props: { session: input.session, repo: input.repo } });
@@ -15,7 +17,6 @@ export const cloudflarePlace = (container: cf.Container, exports: object): Place
         Promise.all([
           container.interceptOutboundHttp("github.internal", fetcher),
           container.interceptOutboundHttp("files.internal", fetcher),
-          // gh: TLS ends at Cloudflare, so the Worker can swap in the token and check the request.
           container.interceptOutboundHttps(
             "api.github.com",
             loopback({ props: { session: input.session, repo: input.repo, api: "github" } }),
@@ -28,8 +29,6 @@ export const cloudflarePlace = (container: cf.Container, exports: object): Place
           ),
         ]),
       ).pipe(Effect.mapError(() => new ContainerStartFailed()));
-      // The deployer names the release's image `session` in the Worker's image map. A start
-      // without `instance` gets `lite`, so the size is always named.
       const image = container.images["session"];
       if (image === undefined) return yield* Effect.die("no session image in the image map");
       yield* Effect.try({

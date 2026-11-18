@@ -55,11 +55,8 @@ const Create = Schema.Struct({
   provider: Schema.Literal("cloudflare"),
   agent: Schema.optional(AgentKind),
   size: Schema.optional(Size),
-  // The agent's scripted stand-in, for e2e: no ChatGPT, Claude or GitHub sign-in needed.
   scripted: Schema.optional(Schema.Literal(true)),
-  // A second create with the same key steers the session the first one made.
   key: Schema.optional(Key),
-  // A shorter idle window, so e2e can watch a scripted session sleep.
   idleAfter: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 10_000, maximum: 600_000 })),
   ),
@@ -158,8 +155,7 @@ const idempotencyKey = (header: string | undefined) =>
 
 type ByteRange = { offset: number; length?: number } | { suffix: number };
 
-// One `bytes=a-b`, `bytes=a-` or `bytes=-n` range; anything else is served whole, as RFC 9110 allows.
-const byteRange = (header: string | undefined): ByteRange | undefined => {
+const byteRange: (header: string | undefined) => ByteRange | undefined = (header) => {
   const parts = /^bytes=(\d*)-(\d*)$/.exec(header ?? "");
   if (parts === null) return undefined;
   const [, first = "", last = ""] = parts;
@@ -169,7 +165,6 @@ const byteRange = (header: string | undefined): ByteRange | undefined => {
   return Number(last) < offset ? undefined : { offset, length: Number(last) - offset + 1 };
 };
 
-// The start and length R2 serves for that range, clamped to the object.
 const served = (range: ByteRange | undefined, size: number) => {
   if (range === undefined) return [0, size] as const;
   if ("suffix" in range)
@@ -180,7 +175,6 @@ const served = (range: ByteRange | undefined, size: number) => {
   ] as const;
 };
 
-// Port 7000 is the supervisor's; a preview never reaches it.
 export const hatchPort = (port: number) =>
   Number.isInteger(port) && port >= 1024 && port <= 65535 && port !== 7000;
 const hatchHost = (base: string, port: number, id: string) => `${port}-${id}.${base}`;
@@ -248,7 +242,6 @@ export function apiHandler(
         claudeStyle: yield* credential.claudeStyle(),
         email: request.headers["cf-access-authenticated-user-email"] ?? null,
         running: yield* credential.runningCount(),
-        // The deployer always sets SCOTTY_MAX_RUNNING from the stage's maxRunning.
         maxRunning: yield* Effect.orDie(Config.Int("SCOTTY_MAX_RUNNING")),
       });
     }
@@ -305,7 +298,6 @@ export function apiHandler(
       yield* credential.setRepoSize(repo, size);
       return yield* HttpServerResponse.json({ repo: repoKey(repo), size });
     }
-    // Fetches the source at its ref, keeps the tarball and records what changed.
     const saveSource = (spec: SourceSpec) =>
       Effect.gen(function* () {
         const noToken = bad("Skills come from GitHub; add a token first", 400, githubHint);
@@ -570,7 +562,6 @@ export function apiHandler(
         return yield* HttpServerResponse.json({ name, removed: true });
       }
     }
-    // Each run that reached a session carries how its turn went, read from that session.
     if (url.pathname === "/api/runs" && request.method === "GET") {
       const automation = url.searchParams.get("automation") ?? undefined;
       if (automation !== undefined && !automationName.test(automation))
@@ -660,8 +651,6 @@ export function apiHandler(
         return yield* bad(`Search text is at most ${maxSearch} characters`, 400);
       const query = searched.value;
       const ids = query === "" ? yield* credential.sessions() : yield* credential.search(query);
-      // Each view may wake a cold Durable Object; one at a time, a long list outlasts the CLI.
-      // A session that cannot open is left out rather than failing the whole list.
       const opened = yield* Effect.forEach(
         ids,
         (entry) => Effect.exit(sessions.getByName(entry.id).view()),
@@ -680,7 +669,6 @@ export function apiHandler(
       const window = Schema.decodeUnknownExit(StatsWindow)(url.searchParams.get("window") ?? "7d");
       if (Exit.isFailure(window)) return yield* bad("window is 7d, 30d or all");
       const ids = yield* credential.sessions();
-      // As the session list does: 16 at a time, leaving out a session that cannot open.
       const opened = yield* Effect.forEach(
         ids,
         (entry) => Effect.exit(sessions.getByName(entry.id).stats()),
@@ -737,7 +725,6 @@ export function apiHandler(
       return yield* HttpServerResponse.json({ url: `https://${hatchHost(hatchBase, port, id)}` });
     }
     if (request.method === "GET" && match[4] !== undefined) {
-      // iOS Safari plays a video only when a Range request gets a 206 with Content-Length.
       const wanted = byteRange(request.headers["range"]);
       const got = yield* bucket
         .get(`files/${id}/${match[4]}`, wanted === undefined ? {} : { range: wanted })
@@ -757,7 +744,6 @@ export function apiHandler(
           ? { "content-range": `bytes ${start}-${start + length - 1}/${object.size}` }
           : {}),
       };
-      // A stream is sent chunked, without the Content-Length Safari needs; files are at most 25 MB.
       const bytes = yield* object.bytes().pipe(Effect.orDie);
       return HttpServerResponse.uint8Array(bytes, { status, headers });
     }
@@ -770,7 +756,6 @@ export function apiHandler(
       return yield* HttpServerResponse.json(yield* stub.stop(retry));
     }
     if (request.method === "POST" && subpath === "resume") {
-      // The body is optional: a bare resume keeps the session's size.
       const text = yield* request.text;
       const body = yield* Schema.decodeUnknownEffect(Resume)(text === "" ? "{}" : text).pipe(
         Effect.catchTag("SchemaError", (error) => bad(error.message)),
@@ -833,10 +818,7 @@ export function apiHandler(
     }
     return yield* bad("Not found", 404);
   }).pipe(
-    // A failure no branch answered. Only an unreadable request body is the caller's; the rest
-    // (R2, the Creds DO's storage, a reply that won't serialize) is Scotty's, so it is logged.
     Effect.catch((error) =>
-      // The tag and message only: the error can hold the request, headers included.
       Effect.logError("API request failed", error._tag, error.message).pipe(
         Effect.andThen(
           error._tag === "HttpServerError" && error.reason._tag === "RequestParseError"

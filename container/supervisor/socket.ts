@@ -17,7 +17,6 @@ import {
 import { acknowledge, dial, emit, initialWire, type Output } from "./wire.js";
 import type { WorkspaceError } from "./workspace.js";
 
-// A terminal socket carries its size; every other socket is the Session DO's wire.
 interface Peer {
   data: typeof Dial.Type & { terminal?: Size };
   send(message: string | Uint8Array): void;
@@ -40,7 +39,6 @@ declare const Bun: {
 class ProtocolError extends Schema.TaggedError<ProtocolError>()("ProtocolError", {
   message: Schema.String,
 }) {}
-// Bun could not read an uploaded save or skill tarball.
 class UploadError extends Schema.TaggedError<UploadError>()("UploadError", {
   path: Schema.Literals(["/save", "/skills"]),
 }) {}
@@ -70,7 +68,6 @@ type Saves = {
   skills: (commit: string, tarball: Uint8Array) => Effect.Effect<void, WorkspaceError>;
 };
 
-// The controller reports a command's outcome on the wire itself; only a defect escapes.
 export const serve = (
   receive: (message: ToSupervisorMessage) => Effect.Effect<void>,
   saves: Saves,
@@ -79,7 +76,6 @@ export const serve = (
   let listeningAt = 0;
   let listeningAgeMs = 0;
   const queue = Effect.runSync(Queue.unbounded<Event>());
-  // The consumer alone owns wire state and the active peer; Bun callbacks only enqueue.
   let wire = initialWire(crypto.randomUUID());
   let peer: Peer | undefined;
   const enqueue = (event: Event) => {
@@ -116,7 +112,7 @@ export const serve = (
       console.error(new ProtocolError({ message: "supervisor output encoding failed" }).message);
     }
   };
-  const processEvent = (event: Event): Effect.Effect<void> => {
+  const processEvent: (event: Event) => Effect.Effect<void> = (event) => {
     switch (event.type) {
       case "open": {
         const result = dial(wire, event.peer.data.gen, event.peer.data.after, {
@@ -175,7 +171,6 @@ export const serve = (
             wire = acknowledge(wire, parsed.value.ack);
             return;
           }
-          // Acks and dials bypass slow actions; runner actions use their own FIFO queue.
           yield* receive(parsed.value).pipe(
             Effect.catchCause(() =>
               Effect.sync(() =>
@@ -208,7 +203,6 @@ export const serve = (
     fetch(request, server) {
       const url = new URL(request.url);
       if (url.pathname === "/save") {
-        // Saves go over HTTP because inbound WebSocket frames are capped at 1 MiB.
         const gen = wire.gen;
         if (gen === undefined || url.searchParams.get("gen") !== String(gen))
           return new Response("generation conflict", { status: 409 });

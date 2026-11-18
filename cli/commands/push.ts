@@ -4,7 +4,6 @@ import { Argument, Command } from "effect/unstable/cli";
 import { Saved, failure } from "../client.js";
 import { dim, green, output, readStdin, withClient } from "./common.js";
 
-// `-` reads the text from stdin.
 const readText = (path: string) =>
   Effect.gen(function* () {
     if (path === "-") return yield* readStdin;

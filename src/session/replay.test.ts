@@ -14,7 +14,12 @@ import { conversationView, sessionView } from "./view.js";
 const logs = join(process.cwd(), "e2e", "logs");
 const decodeLine = Schema.decodeUnknownSync(Schema.fromJsonString(SessionEvent));
 
-const replayLine = (state: State, text: string, file: string, line: number): State => {
+const replayLine: (state: State, text: string, file: string, line: number) => State = (
+  state,
+  text,
+  file,
+  line,
+) => {
   let event: typeof SessionEvent.Type;
   try {
     event = decodeLine(text);
@@ -45,7 +50,6 @@ describe("saved session event logs", () => {
         )
           named = event.size;
       }
-      // A log ends at the last size it names; one written before sizes, at `standard-1`.
       expect(sessionView("replay", state).display.size, file).toBe(named ?? "standard-1");
     }
   });
@@ -148,8 +152,6 @@ describe("saved session event logs", () => {
     expect(state.pending).toEqual([]);
   });
   it("replays a resume the Session DO gave up on before the container deadline", async () => {
-    // The fold is right for these events; the defect was the DO appending container.stopped
-    // after ~10 s of dial retries while this deadline still had ~110 s left.
     const file = "2026-09-28-resume-dial-gave-up.jsonl";
     const lines = (await readFile(join(logs, file), "utf8")).trim().split("\n");
     let state = initial;
@@ -168,8 +170,6 @@ describe("saved session event logs", () => {
     expect(state.phase).toBe("stopped");
   });
   it("replays a turn whose container stopped while the Session DO was away, ending it interrupted", async () => {
-    // Cloudflare evicted the quiet Session DO mid-turn and stopped its container; the redial on
-    // wake found it gone. The UI kept showing the reply as streaming.
     const file = "2026-09-30-idle-container-stopped.jsonl";
     const lines = (await readFile(join(logs, file), "utf8")).trim().split("\n");
     let state = initial;
@@ -258,7 +258,6 @@ describe("saved session event logs", () => {
       "Bash",
     ]);
     expect(children.every((item) => item.kind === "tool" && item.status === "done")).toBe(true);
-    // The subagent's own words stay in its result; the turn's answer is the parent's last text.
     expect(items.filter((item) => item.kind === "text" && item.final)).toHaveLength(1);
     expect(items.every((item) => item.kind !== "text" || !("parent" in item))).toBe(true);
   });
@@ -315,7 +314,6 @@ describe("stats from saved session event logs", () => {
       running: 1,
       agents: { codex: { sessions: 1, runMs: 247_000 + 3_600_000 } },
     });
-    // The open run counts up to `now`, at the size it started at.
     expect(all.total.sizes).toEqual([
       {
         size: "standard-1",
@@ -323,7 +321,6 @@ describe("stats from saved session event logs", () => {
         cost: ((247_000 + 3_600_000) / 3_600_000) * hourlyRate("standard-1"),
       },
     ]);
-    // Seven days after the failure, only the open run's last week counts.
     const later = repoStats([stats], "7d", 371_000 + 8 * 86_400_000);
     expect(later.total).toMatchObject({ sessions: 1, runMs: 7 * 86_400_000, failed: 0, turns: 0 });
   });
@@ -341,7 +338,6 @@ describe("stats from saved session event logs", () => {
   it("gives each run the size it started at, and sums hours and cost by size", async () => {
     const events = await read("2026-10-20-resize-standard-3.jsonl");
     const stats = statsOf(events);
-    // Stopped at standard-1 (seq 21), resumed at standard-3 (seq 23), stopped again (seq 29).
     const [first, second] = [
       { start: at(events, 2), end: at(events, 21) },
       { start: at(events, 23), end: at(events, 29) },
@@ -369,7 +365,6 @@ describe("stats from saved session event logs", () => {
       covered.sizes.reduce((sum, share) => sum + share.cost, 0),
       12,
     );
-    // A window that opens during the second run counts only its last 10 s, at standard-3.
     const late = repoStats([stats], "7d", second.end - 10_000 + 7 * 86_400_000).total;
     expect(late.sizes).toEqual([
       { size: "standard-3", runMs: 10_000, cost: hours(10_000) * hourlyRate("standard-3") },

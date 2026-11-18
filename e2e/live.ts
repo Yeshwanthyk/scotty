@@ -16,7 +16,6 @@ import {
 import { agent, prompt, sessionAgent } from "./lib/agent.js";
 import { fixtureRepo } from "../protocol/supervisor.js";
 
-// Past the Session DO's 360 s workspace deadline, so a slow start fails on its own verdict.
 const limit = 420_000;
 const reply = "live-reply";
 
@@ -34,8 +33,6 @@ const ListFrame = Schema.Union([
 const check = (ok: boolean, message: string) =>
   ok ? Effect.void : Effect.fail(failure("live", message, "scotty doctor"));
 
-// One live socket: every frame it received, decoded, in order. Anything undecodable fails the test.
-// The socket closes with the scope, so a failed step can't leave it holding the process open.
 const listen = <A>(connect: () => WebSocketLike, schema: Schema.Codec<A>, name: string) =>
   Effect.acquireRelease(Effect.sync(connect), (socket) => Effect.sync(() => socket.close())).pipe(
     Effect.map((socket) => {
@@ -51,7 +48,6 @@ const listen = <A>(connect: () => WebSocketLike, schema: Schema.Codec<A>, name: 
       });
       socket.addEventListener("close", () => (closed = true));
       const fail = (message: string) => Effect.fail(failure("live", message, "scotty doctor"));
-      // Waits on frames already received; this makes no request.
       const until = (done: (frames: readonly A[]) => boolean, what: string) =>
         Effect.gen(function* () {
           const started = Date.now();
@@ -78,7 +74,6 @@ const program = Effect.gen(function* () {
     return connect(endpoint.href, { headers: { "cf-access-token": token } });
   };
 
-  // 1. The list socket is open before the session exists.
   const list = yield* listen(() => open("/api/sessions/live"), ListFrame, "The list socket");
   yield* Effect.sleep("2 seconds");
   const session = yield* request("/api/sessions", Created, {
@@ -96,7 +91,6 @@ const program = Effect.gen(function* () {
   const prefix = `/api/sessions/${id}`;
   console.log(`Session ${id}`);
 
-  // 2. The session socket's first frame is a snapshot; pushes show the turn stream, then end.
   const live = yield* listen(() => open(`${prefix}/live`), SessionFrame, "The session socket");
   yield* live.until((frames) => frames.length > 0, "the first snapshot");
   const turn = (frame: typeof SessionFrame.Type) => frame.conversation.turns[0];
@@ -117,14 +111,12 @@ const program = Effect.gen(function* () {
   );
   console.log(`Session socket: ${completed.length} frames, streaming then completed with ${reply}`);
 
-  // 3. The list socket heard about the session.
   yield* list.until(
     (frames) => frames.some((f) => f.kind === "session" && f.session.identity.id === id),
     "the session on the list socket",
   );
   console.log("List socket: the new session was pushed");
 
-  // 4. The owner's stop is pushed to both, as theirs.
   yield* request(`${prefix}/stop`, View, { method: "POST" });
   const byUser = (s: typeof Session.Type) =>
     s.authority.kind === "stable" && s.authority.stop?.reason === "user";
@@ -139,7 +131,6 @@ const program = Effect.gen(function* () {
   );
   console.log("Stop: both sockets show the session stopped by the owner");
 
-  // 5. A new socket starts from a fresh snapshot, no older than what the last one saw.
   const last = Math.max(...stopped.map((f) => f.seq));
   live.close();
   const again = yield* listen(() => open(`${prefix}/live`), SessionFrame, "The reconnected socket");
@@ -150,7 +141,6 @@ const program = Effect.gen(function* () {
   );
   console.log(`Reconnect: snapshot at seq ${first?.seq} (last seen ${last})`);
 
-  // 6. Deleting the session tells the list.
   yield* request(prefix, Removed, { method: "DELETE" });
   yield* list.until(
     (frames) => frames.some((f) => f.kind === "removed" && f.id === id),

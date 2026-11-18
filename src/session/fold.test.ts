@@ -11,7 +11,7 @@ import {
   type State,
 } from "./fold.js";
 import { conversationView, sessionView } from "./view.js";
-import { boot, check, created, delivered, hello, make, ready, start } from "./fold-fixtures.js";
+import { boot, check, created, delivered, hello, make, ready, start } from "./fold.fixture.js";
 
 describe("session fold", () => {
   it("startup diagnostics preserve state, commands and deadlines apart from log sequence", () => {
@@ -127,7 +127,6 @@ describe("session fold", () => {
     expect(state.requests[0]?.status).toBe("pending");
     state = fold(state, delivered);
     expect(state.phase).toBe("running");
-    // The open turn stalls only after the agent is silent that long.
     expect(state.pending).toEqual([{ op: "stalled", due: delivered.at + deadlines.stalled }]);
     check(state);
   });
@@ -164,7 +163,6 @@ describe("session fold", () => {
     ]);
     expect(deadline(state)).toBeDefined();
     check(state);
-    // An interrupt still has nothing to stop before the workspace exists.
     const stop = make(3, "interrupt.requested", { req: "i", turn: "0" });
     expect(
       fold([created, start].reduce(fold, initial), stop).requests.find((r) => r.req === "i")
@@ -216,14 +214,12 @@ describe("session fold", () => {
     );
     expect(startStep(state, steer)).toBe("duplicate");
     expect(startStep(state, { ...steer, prompt: "else" })).toBe("conflict");
-    // A steer whose turn has since ended went in: its retry is still a duplicate.
     state = fold(state, make(7, "prompt.delivered", { req: "steer-1" }));
     state = fold(
       state,
       make(8, "turn.ended", { gen: 1, turn: "0", codexTurn: "cx", state: "completed" }),
     );
     expect(startStep(state, steer)).toBe("duplicate");
-    // One the session refused did not go in, and a retry cannot put it in.
     state = fold(
       state,
       make(9, "prompt.requested", { req: "late", turn: "0", text: "late", images: [] }),
@@ -247,11 +243,9 @@ describe("session fold", () => {
       agent: "codex",
       prompt: "hello",
     };
-    // A retried create naming another size is a conflict; one naming none, or the same, is not.
     expect(startStep(sized, { ...input, size: "standard-1" })).toBe("conflict");
     expect(startStep(sized, { ...input, size: "standard-3" })).toBe("duplicate");
     expect(startStep(sized, input)).toBe("duplicate");
-    // A wake or keyed steer names no size, so it reaches a session of any size.
     expect(startStep(sized, { ...input, req: "run:wake-1", prompt: "wake" })).toBe("prompt");
     expect(startStep(unsized, { ...input, req: "run:wake-1", prompt: "wake" })).toBe("prompt");
     check(sized);
@@ -453,7 +447,6 @@ describe("session fold", () => {
       });
       const timed = fold(item.state, event);
       expect(timed.failure).toEqual({ code: item.code, retryable: true });
-      // A start placed after its deadline would otherwise run until the inactivity timeout.
       expect(command(timed, event)).toEqual({ kind: "destroy" });
       check(timed);
     }
@@ -607,14 +600,12 @@ describe("session fold", () => {
     let state = fold(stopped, sized);
     expect(state).toMatchObject({ phase: "provisioning", gen: 2, size: "standard-3" });
     expect(command(state, sized)).toEqual({ kind: "container.start", gen: 2, fresh: true });
-    // A live container never changes size: the API refuses a resize, and the fold ignores one.
     expect(resizeConflict(state, "standard-2")).toBe("running");
     expect(resizeConflict(state, "standard-3")).toBeUndefined();
     expect(resizeConflict(state, undefined)).toBeUndefined();
     expect(fold(state, make(9, "resume.requested", { size: "standard-2" })).size).toBe(
       "standard-3",
     );
-    // A later resume without a size, and a steer that resumes, keep it.
     state = [make(9, "container.stopped", { gen: 2 }), make(10, "resume.requested")].reduce(
       fold,
       state,
@@ -632,14 +623,12 @@ describe("session fold", () => {
     );
     expect(state).toMatchObject({ phase: "provisioning", gen: 4, size: "standard-3" });
     expect(sessionView("s", state).display.size).toBe("standard-3");
-    // A keyed start naming the size the session was created at still reaches it.
     const input = { repo: "https://example.org/repo", agent: "codex", prompt: "wake" };
     expect(startStep(state, { ...input, req: "run:wake-1", size: "standard-1" })).toBe("prompt");
     check(state);
   });
 
   it("resumes on a steer to a stopped session and resends it once the workspace is ready", () => {
-    // The stop interrupted turn 0, so the steer starts turn 1.
     const stale = make(8, "prompt.requested", { req: "s0", turn: "0", text: "late", images: [] });
     let state = fold(stoppedWithThread(), stale);
     expect(state.requests.find((r) => r.req === "s0")?.status).toBe("stale");
@@ -702,7 +691,6 @@ describe("session fold", () => {
       ["initial:1", "delivered"],
       ["hook:ci:msg_2", "pending"],
     ]);
-    // A retried delivery names the same req and does nothing.
     const retried = make(7, "prompt.requested", {
       req: "hook:ci:msg_2",
       turn: "0",
@@ -791,7 +779,6 @@ describe("session fold", () => {
     const due = timeout(14, 13_000 + deadlines.idle);
     state = fold(state, due);
     expect(command(state, due)).toEqual({ kind: "idle", gen: 1, seq: 14 });
-    // The next window starts at once, for when the Session DO finds the owner still at it.
     expect(state.pending).toEqual([{ op: "idle", due: due.at + deadlines.idle }]);
     const slept = make(15, "container.stopped", { gen: 1, reason: "idle", idleSeq: 14 });
     state = fold(state, slept);
@@ -802,7 +789,6 @@ describe("session fold", () => {
     });
     expect(command(state, slept)).toEqual({ kind: "destroy" });
     check(state);
-    // A steer that lands while the Session DO checks for use keeps the session awake.
     const woke = fold(
       fold(
         fold(state0(), timeout(14, 13_000 + deadlines.idle)),
@@ -812,7 +798,6 @@ describe("session fold", () => {
     );
     expect(woke).toMatchObject({ phase: "running", stop: undefined });
     check(woke);
-    // So does a steer whose turn and save both finish before the check's verdict lands.
     const checking = () => fold(state0(), timeout(14, 13_000 + deadlines.idle));
     const finished = [
       make(15, "prompt.requested", { req: "q", turn: "2", text: "again", images: [] }),
@@ -823,7 +808,6 @@ describe("session fold", () => {
     ].reduce(fold, checking());
     expect(finished).toMatchObject({ phase: "running", stop: undefined });
     check(finished);
-    // And use the Session DO records during the check.
     const used = [
       make(15, "active"),
       make(16, "container.stopped", { gen: 1, reason: "idle", idleSeq: 14 }),
@@ -859,7 +843,6 @@ describe("session fold", () => {
     expect(ended).toMatchObject({ phase: "stopped", stop: { reason: "stalled" }, pending: [] });
     expect(command(ended, saved)).toEqual({ kind: "destroy" });
     check(ended);
-    // The owner's next turn outlives the stalled turn's save.
     const next = fold(
       fold(
         fold(state, make(7, "turn.ended", { gen: 1, turn: "0", state: "interrupted" })),
@@ -869,7 +852,6 @@ describe("session fold", () => {
     );
     expect(next).toMatchObject({ phase: "running", stop: undefined, currentTurn: "1" });
     check(next);
-    // A turn that ignores the interrupt stops at the next stalled deadline.
     const again = timeout(7, stall.at + deadlines.interrupt + deadlines.save);
     state = fold(state, again);
     expect(state).toMatchObject({
@@ -895,7 +877,6 @@ describe("session fold", () => {
     const fatal = make(6, "failed", { phase: "start", code: "broken", retryable: false });
     state = fold(fold(boot(), fatal), make(7, "resume.requested"));
     expect(state.phase).toBe("failed");
-    // It can never resume, so a resize is refused as failed: stopping it would not help.
     expect(resizeConflict(state, "standard-3")).toBe("failed");
     expect(resizeConflict(fold(boot(), retryable), "standard-3")).toBeUndefined();
     check(state);

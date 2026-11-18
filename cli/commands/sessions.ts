@@ -174,7 +174,6 @@ export const log = Command.make("log", { id: Argument.String("id") }, ({ id }) =
   }),
 );
 
-// Opens the web app, or one session in it, in the default browser.
 export const open = Command.make(
   "open",
   { id: Argument.String("id").pipe(Argument.optional) },

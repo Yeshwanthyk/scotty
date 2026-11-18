@@ -45,14 +45,12 @@ const load = (file: string) =>
     Effect.mapError(() => failure("blueprints", `blueprints/${file} is not a blueprint`, file)),
   );
 
-// This run's own names, so it never touches an owner's install of the same blueprint, and a
-// script for the scripted agent in place of each prompt.
-const rename = (
+const rename: (
   blueprint: Blueprint,
   suffix: string,
   scripts: Readonly<Record<string, string>>,
   mcpUrl?: string,
-): Blueprint => ({
+) => Blueprint = (blueprint, suffix, scripts, mcpUrl?) => ({
   ...blueprint,
   connections: blueprint.connections.map((connection) =>
     connection.kind === "mcp" && mcpUrl !== undefined
@@ -70,7 +68,6 @@ const rename = (
   })),
 });
 
-// Independent provider-shaped senders: HMAC-SHA256 hex over the raw body with the raw secret.
 const hmac = async (secret: string, text: string) => {
   const key = await crypto.subtle.importKey(
     "raw",
@@ -163,7 +160,6 @@ const program = Effect.gen(function* () {
       );
   });
 
-  // The same steps as `scotty blueprint install` and the Settings sheet: check, create off, list.
   const install = (
     blueprint: Blueprint,
     secrets: Readonly<Record<string, string>>,
@@ -227,7 +223,6 @@ const program = Effect.gen(function* () {
     });
 
   yield* Effect.gen(function* () {
-    // PR reviewer: opened starts a review on the head branch, a comment wakes it, closed ends it.
     const reviewer = rename(yield* load("pr-reviewer.json"), suffix, {
       "pr-review": "say review {{pull_request.number}}",
       "pr-review-comment": "say {{comment.body}}",
@@ -241,7 +236,6 @@ const program = Effect.gen(function* () {
     if (hook?.kind !== "inbound" || hook.secret === null)
       return yield* check(false, "The GitHub webhook did not come back with a generated secret");
     console.log(`Installed ${reviewer.name} off, then enabled: ${hook.url}`);
-    // A unique number keeps this run's key away from sessions earlier runs left on the stage.
     const number = Date.now();
     const repository = { full_name: fixtureRepo };
     const sender = { login: "e2e-reviewer" };
@@ -316,9 +310,6 @@ const program = Effect.gen(function* () {
     );
     console.log("PR closed → session ended");
 
-    // Linear, with two targets: an issue with target B's label starts a session through B's start
-    // automation, keyed by the issue, which reads it through the MCP connection; other updates
-    // skip; completing it ends it through B's end automation, while A's skips.
     const mcpName = `linear-${suffix}`;
     const call = `call ${JSON.stringify({
       url: `http://${mcpName}.internal/api/mcp`,
@@ -348,8 +339,6 @@ const program = Effect.gen(function* () {
       `${server}/mcp`,
     );
     const signing = `lin_wh_${crypto.randomUUID().replaceAll("-", "")}`;
-    // Only the fixture repo is safe to use, so both targets work there; the runs' automation
-    // names tell them apart.
     const [labelA, labelB] = ["e2e:a", "e2e:b"];
     const [inbound, mcp] = yield* install(
       worker,

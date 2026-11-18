@@ -12,7 +12,6 @@ import { type Config, readConfig } from "../config.js";
 import { embedded, packedFile, unpackRelease } from "../release.ts";
 import { dim, green, json, launch, output } from "./common.js";
 
-// A Scotty checkout, when the CLI runs from one rather than as the compiled binary.
 export const root = fileURLToPath(new URL("../..", import.meta.url));
 
 export const loadConfig = Effect.gen(function* () {
@@ -27,7 +26,6 @@ export const progress = (text: string) =>
     if (!json) console.error(dim(`· ${text}`));
   });
 
-// How a slow step shows itself; init draws spinners, other commands print a line.
 export interface Report {
   readonly start: (text: string) => void;
   readonly done: (text: string) => void;
@@ -43,7 +41,6 @@ const plain: Report = {
   failed: (_, printed) => console.error(printed),
 };
 
-// Quiet unless it fails; then the last lines of its output say why.
 export const step = (
   text: string,
   command: string,
@@ -58,18 +55,13 @@ export const step = (
     const child = yield* spawner.spawn(
       ChildProcess.make(command, args, { cwd: root, env, extendEnv: true, stdin: "ignore" }),
     );
-    // The child runs in its own process group, which a terminal's Ctrl-C does not reach, and an
-    // exit skips this scope's cleanup; so an exit stops it here.
     const stop = () => {
       try {
-        process.kill(-child.pid, "SIGINT");
-      } catch {
-        // It has already exited.
-      }
+        process.kill(-Number(child.pid), "SIGINT");
+      } catch {}
     };
     process.once("exit", stop);
     yield* Effect.addFinalizer(() => Effect.sync(() => process.off("exit", stop)));
-    // The last lines say why a step failed.
     const last: string[] = [];
     const [, code] = yield* Effect.all(
       [
@@ -103,7 +95,6 @@ export const step = (
     }),
   );
 
-// A module the CLI carries; failing to load it means a broken install.
 export const load = <A>(name: string, module: () => Promise<A>) =>
   Effect.tryPromise({
     try: module,
@@ -116,7 +107,6 @@ const Messages = Schema.Array(Schema.Struct({ message: Schema.String }));
 const nonEmpty = (value: unknown) =>
   typeof value === "string" && value !== "" ? value : undefined;
 
-// A failure as its tag and what it says: its message, or Cloudflare's list of errors.
 const described = (error: unknown) => {
   if (typeof error === "string") return error;
   const tag =
@@ -130,7 +120,6 @@ const described = (error: unknown) => {
   return message === undefined ? tag : `${tag}: ${message}`;
 };
 
-// A Cloudflare step behind the report; a failure shows what Cloudflare said.
 export const cloudflareStep = <A, E, R>(
   text: string,
   done: string,
@@ -149,8 +138,6 @@ export const cloudflareStep = <A, E, R>(
     return result;
   });
 
-// The owner's Cloudflare API token for this run only: CLOUDFLARE_API_TOKEN, or pasted after the
-// page that creates one opens. It is checked by listing the accounts it can see, and never saved.
 export const cloudflareToken = Effect.gen(function* () {
   const { accounts, cloudflareLayer, tokenPage } = yield* cloudflare;
   const fromEnv = process.env.CLOUDFLARE_API_TOKEN;
@@ -195,8 +182,6 @@ export const cloudflareToken = Effect.gen(function* () {
   return cloudflareLayer(token);
 });
 
-// Deploys the release this CLI carries, or one built from this checkout, to the stage; asks
-// nothing. `image` replaces the release's image with one built FROM it.
 export const deployWith = (
   config: Config,
   layer: CloudflareLayer,
@@ -220,7 +205,6 @@ export const deployWith = (
             report,
             "UI built",
           );
-          // In its own process, so the binary never bundles the bundler.
           const build = `import { buildRelease } from "./deploy/release.ts"; await buildRelease("dist/release");`;
           yield* step(
             "Building the release",
@@ -241,7 +225,6 @@ export const deployWith = (
     return `https://${config.host}`;
   }).pipe(Effect.scoped);
 
-// Removes the stage by name; the caller checks what is left.
 export const removeWith = (config: Config, layer: CloudflareLayer, report: Report = plain) =>
   Effect.gen(function* () {
     const { removeStage } = yield* deployer;
@@ -253,7 +236,6 @@ export const removeWith = (config: Config, layer: CloudflareLayer, report: Repor
     );
   });
 
-// What of the stage Cloudflare still has.
 export const leftoversWith = (config: Config, layer: CloudflareLayer) =>
   Effect.gen(function* () {
     const { leftovers } = yield* deployer;
@@ -279,8 +261,6 @@ export const deploy = Command.make(
     }),
 );
 
-// The guide a person hands their own agent; the binary carries it, a checkout has it beside
-// this CLI.
 export const skill = Command.make("skill", {}, () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;

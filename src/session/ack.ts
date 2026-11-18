@@ -1,12 +1,12 @@
 import type { State } from "./state.js";
 
-export const shouldAck = (state: State, n: number, force = false): boolean =>
-  force || n - state.lastAckN >= 50;
+export const shouldAck = (state: State, n: number, force = false) =>
+  (force || n - state.lastAckN >= 50) satisfies boolean;
 
-export const ackRecorded = (
+export const ackRecorded: (
   state: State,
   output: { readonly gen: number; readonly n: number },
-): boolean =>
+) => boolean = (state, output) =>
   state.gen === output.gen &&
   state.connected &&
   state.lastN === output.n &&

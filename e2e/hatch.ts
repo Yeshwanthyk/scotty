@@ -18,8 +18,6 @@ const Hatch = Schema.Struct({ url: Schema.String });
 const check = (ok: boolean, message: string) =>
   ok ? Effect.void : Effect.fail(failure("hatch", message, "scotty doctor"));
 
-// A Node server with no dependencies: GET answers the marker and the Host it received; /ws
-// echoes one short masked text frame.
 const server = (marker: string) => `import http from "node:http";
 import { createHash } from "node:crypto";
 const server = http.createServer((q, s) => s.end("${marker} " + q.headers.host));
@@ -47,7 +45,6 @@ const get = (url: string, token?: string) =>
     catch: () => failure("network", `GET ${url} failed`, "scotty doctor"),
   });
 
-// Sends one masked text frame through a raw TLS upgrade and resolves with what came back.
 const echo = (url: string, token: string, text: string) =>
   Effect.tryPromise({
     try: () =>
@@ -121,7 +118,6 @@ const program = Effect.gen(function* () {
   const reply = yield* request(`${prefix}/conversation`, Conversation);
   console.log(`Turn 0 replied: ${reply.turns[0]?.assistant ?? ""}`);
 
-  // 2. The URL is the one the API gives; it serves the marker with a localhost Host, and echoes.
   const hatch = yield* request(`${prefix}/hatch/8080`, Hatch);
   const expected = `https://8080-${session.id}.${base}`;
   yield* check(hatch.url === expected, `hatch returned ${hatch.url}, expected ${expected}`);
@@ -134,7 +130,6 @@ const program = Effect.gen(function* () {
   yield* echo(hatch.url, token, `ping-${marker}`);
   console.log("Preview: marker served with Host localhost:8080; WebSocket echoed");
 
-  // 3. Without the token, Access answers and the marker never shows.
   const anonymous = yield* get(`${hatch.url}/`);
   yield* check(
     anonymous.status !== 200 && !anonymous.body.includes(marker),
@@ -142,14 +137,12 @@ const program = Effect.gen(function* () {
   );
   console.log(`Unauthenticated: ${anonymous.status}`);
 
-  // 4. The supervisor port is refused; an unknown session is not running.
   const supervisor = yield* get(`https://7000-${session.id}.${base}/`, token);
   yield* check(supervisor.status === 404, `Port 7000 returned ${supervisor.status}`);
   const unknown = yield* get(`https://8080-nosuchsession.${base}/`, token);
   yield* check(unknown.status === 502, `Unknown session returned ${unknown.status}`);
   console.log("Refused: 7000 is 404, an unknown session is 502");
 
-  // 5. After stop, the URL is 502 and the API says not_running.
   yield* request(`${prefix}/stop`, View, { method: "POST" });
   const stopped = yield* get(`${hatch.url}/`, token);
   yield* check(stopped.status === 502, `Stopped session returned ${stopped.status}`);

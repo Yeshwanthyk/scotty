@@ -1,9 +1,5 @@
 import { Option, Schema } from "effect";
 
-// A login shell in the repository under a PTY, one per terminal socket. Bytes go both ways as
-// binary frames; a text frame `{"type":"resize","cols","rows"}` resizes. The socket closes when
-// the shell exits. The environment is the supervisor's: the ChatGPT token is only in Codex's
-// config.toml, never in the environment.
 interface Pty {
   write(data: string | Uint8Array): number;
   resize(cols: number, rows: number): void;
@@ -42,7 +38,10 @@ const decodeResize = Schema.decodeUnknownOption(
 const shells = new WeakMap<TerminalPeer, Shell>();
 const repo = () => `${process.env.SCOTTY_WORKSPACE_ROOT || "/workspace"}/repo`;
 
-export function openTerminal(peer: TerminalPeer, size: Size): void {
+export const openTerminal: (peer: TerminalPeer, size: Size) => void = function openTerminal(
+  peer,
+  size,
+) {
   try {
     const shell = Bun.spawn(["bash", "-l"], {
       cwd: repo(),
@@ -52,9 +51,7 @@ export function openTerminal(peer: TerminalPeer, size: Size): void {
         data: (_pty, data) => {
           try {
             peer.send(data);
-          } catch {
-            // The socket closed; its close handler ends the shell.
-          }
+          } catch {}
         },
       },
     });
@@ -64,26 +61,27 @@ export function openTerminal(peer: TerminalPeer, size: Size): void {
   } catch {
     peer.close();
   }
-}
+};
 
-export function terminalInput(peer: TerminalPeer, data: string | Uint8Array): void {
-  const pty = shells.get(peer)?.terminal;
-  if (pty === undefined) return;
-  if (typeof data !== "string") {
-    pty.write(data);
-    return;
-  }
-  const resize = Option.getOrUndefined(decodeResize(data));
-  if (resize !== undefined) pty.resize(resize.cols, resize.rows);
-}
+export const terminalInput: (peer: TerminalPeer, data: string | Uint8Array) => void =
+  function terminalInput(peer, data) {
+    const pty = shells.get(peer)?.terminal;
+    if (pty === undefined) return;
+    if (typeof data !== "string") {
+      pty.write(data);
+      return;
+    }
+    const resize = Option.getOrUndefined(decodeResize(data));
+    if (resize !== undefined) pty.resize(resize.cols, resize.rows);
+  };
 
 let open = 0;
-export const openTerminals = (): number => open;
+export const openTerminals: () => number = () => open;
 
-export function closeTerminal(peer: TerminalPeer): void {
+export const closeTerminal: (peer: TerminalPeer) => void = function closeTerminal(peer) {
   const shell = shells.get(peer);
   if (shell !== undefined) open--;
   shells.delete(peer);
   shell?.terminal?.close();
   shell?.kill();
-}
+};

@@ -44,7 +44,7 @@ const failure = (stage: OAuthFailure["stage"], status?: number, code?: string) =
     ...(code === undefined ? {} : { code }),
   });
 
-const errorCode = (value: unknown): string | undefined => {
+const errorCode: (value: unknown) => string | undefined = (value) => {
   const parsed = Schema.decodeUnknownResult(UpstreamError)(value);
   if (Result.isFailure(parsed)) return undefined;
   const { error, code } = parsed.success;

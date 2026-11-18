@@ -47,11 +47,13 @@ export const hash = (bytes: Uint8Array) =>
   `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
 const headerTimeoutMs = 15_000;
-// A blob upload's response arrives only after its whole body, which for a 339 MB layer is minutes.
 const uploadTimeoutMs = 600_000;
 const idleTimeoutMs = 15_000;
 const controllers = new WeakMap<Response, AbortController>();
-const reading = <T>(response: Response, operation: () => Promise<T>): Promise<T> => {
+const reading: <T>(response: Response, operation: () => Promise<T>) => Promise<T> = <T>(
+  response: Response,
+  operation: () => Promise<T>,
+) => {
   const controller = controllers.get(response);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -67,7 +69,6 @@ const cancel = (response: Response, reader: ReadableStreamDefaultReader<Uint8Arr
   void reader.cancel().catch(() => {});
 };
 
-// Keep raw credentials inside this transport closure; callers only get request methods.
 export const registry = (base: string, credential: Redacted.Redacted<string>) => {
   const request = (
     method: string,
@@ -142,7 +143,6 @@ export const call = (
           controllers.set(response.success, controller);
           return response.success;
         }
-        // A body already closed is fine; the retry does not need it.
         yield* Effect.ignore(
           Effect.tryPromise({
             try: async () => {
@@ -165,7 +165,7 @@ export const bytes = (response: Response, step: string, limit = 4 * 1024 * 1024)
       const chunks: Uint8Array[] = [];
       let length = 0;
       try {
-        const consume = async (): Promise<void> => {
+        const consume: () => Promise<void> = async () => {
           const { done, value } = await reading(response, () => reader.read());
           if (done) return;
           length += value.byteLength;
@@ -189,7 +189,6 @@ export const bytes = (response: Response, step: string, limit = 4 * 1024 * 1024)
     catch: (cause) => (cause instanceof CopyError ? cause : fail(`${step} read`, response.status)),
   });
 
-// Spool each missing blob to disk and verify before *any* upload. Never hold a layer in memory.
 export const spool = (response: Response, blob: Blob, path: string) =>
   Effect.tryPromise({
     try: async () => {
@@ -202,13 +201,13 @@ export const spool = (response: Response, blob: Blob, path: string) =>
       const sum = createHash("sha256");
       let size = 0;
       try {
-        const writeChunk = async (chunk: Uint8Array, offset = 0): Promise<void> => {
+        const writeChunk = async (chunk: Uint8Array, offset = 0) => {
           if (offset === chunk.byteLength) return;
           const { bytesWritten } = await file.write(chunk, offset, chunk.byteLength - offset);
           if (bytesWritten === 0) throw Error("short write");
           await writeChunk(chunk, offset + bytesWritten);
         };
-        const consume = async (): Promise<void> => {
+        const consume: () => Promise<void> = async () => {
           const { done, value } = await reading(response, () => reader.read());
           if (done) return;
           size += value.byteLength;
@@ -231,7 +230,7 @@ export const spool = (response: Response, blob: Blob, path: string) =>
     catch: (cause) =>
       cause instanceof CopyError ? cause : fail(`blob I/O ${blob.digest}`, response.status),
   });
-export const streamFile = (path: string): BodyInit => {
+export const streamFile: (path: string) => BodyInit = (path) => {
   let file: Awaited<ReturnType<typeof open>> | undefined;
   return new ReadableStream<Uint8Array<ArrayBuffer>>({
     async start() {

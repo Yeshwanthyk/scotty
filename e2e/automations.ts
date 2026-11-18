@@ -53,7 +53,6 @@ const Answer = Schema.fromJsonString(
   }),
 );
 
-// A minute 70–130 s from now, as a cron line read in `tz`: the schedule fires once, soon.
 const soon = (tz: string) => {
   const at = new Date(Date.now() + 130_000);
   const parts = new Intl.DateTimeFormat("en-GB", {
@@ -66,7 +65,6 @@ const soon = (tz: string) => {
   return `${part("minute")} ${part("hour")} * * *`;
 };
 
-// A Standard Webhooks delivery, signed with the connection's secret.
 const deliver = (
   url: string,
   name: string,
@@ -104,13 +102,11 @@ const program = Effect.gen(function* () {
   const url = yield* target(process.env.SCOTTY_URL);
   const request = client({ url, token: yield* access(url) });
   const suffix = crypto.randomUUID().slice(0, 8);
-  // A unique issue keeps this run's key away from sessions earlier runs left on the stage.
   const issue = Date.now();
   const runsOf = (name: string) => request(`/api/runs?automation=${name}`, Runs);
   const scheduled = `e2e-cron-${suffix}`;
   const hook = `e2e-${suffix}`;
   const listener = `e2e-event-${suffix}`;
-  // Removed even when a check fails, so a failed run leaves nothing on the stage.
   const cleanup = Effect.gen(function* () {
     for (const name of [scheduled, listener])
       yield* request(`/api/automations/${name}`, AutomationRemoved, { method: "DELETE" }).pipe(
@@ -121,7 +117,6 @@ const program = Effect.gen(function* () {
     );
   });
   yield* Effect.gen(function* () {
-    // 1. A calendar schedule in a zone away from UTC fires once, into a session that names its run.
     const tz = "Asia/Kolkata";
     yield* request("/api/automations", AutomationSwitched, {
       method: "POST",
@@ -164,7 +159,6 @@ const program = Effect.gen(function* () {
       "The session's origin does not name the automation and run",
     );
     console.log(`Schedule fired once: run ${run.id} → session ${session} → run`);
-    // The run reads its turn's outcome from the session.
     while (Date.now() - started < 600_000) {
       const now = (yield* runsOf(scheduled)).runs[0];
       if (now?.outcome === "completed") break;
@@ -181,7 +175,6 @@ const program = Effect.gen(function* () {
     );
     yield* request(`/api/sessions/${session}/stop`, View, { method: "POST" }).pipe(Effect.ignore);
 
-    // 2. A delivery an event automation's `only` does not match is recorded as a skip.
     const connection = yield* request("/api/connections", ConnectionCreated, {
       method: "POST",
       body: {
@@ -230,7 +223,6 @@ const program = Effect.gen(function* () {
     );
     console.log(`A non-matching delivery is a skip: ${skipped[0]?.reason}`);
 
-    // A repeated event preserves a run's start or steer and appends no prompt to its session.
     let eventSession: string | null = null;
     const startDeliveries: { delivery: string; body: unknown; status: string }[] = [];
     for (const [title, status] of [
@@ -391,7 +383,6 @@ const program = Effect.gen(function* () {
       log.some((event) => event.kind === "save.done" && event.turn === turn),
     );
 
-    // API retry ids also keep the session they steered, independently of its routing key.
     const retry = `api-${suffix}`;
     const retryBody = {
       title: "Retry identity",
@@ -460,7 +451,6 @@ const program = Effect.gen(function* () {
       log.some((event) => event.kind === "save.done" && event.turn === ownerTurn),
     );
     const resumed = yield* events();
-    // This goes directly to the DO with the end's request id, bypassing settled-run dedupe.
     yield* request(`${prefix}/stop`, View, { method: "POST", key: `run:${endedRun?.id}` });
     yield* check(
       JSON.stringify(yield* events()) === JSON.stringify(resumed),
@@ -497,7 +487,6 @@ const program = Effect.gen(function* () {
       "A keyed API retry followed the replacement session",
     );
 
-    // Prune the 500-run history, then replay old requests with the key held by a replacement.
     if (fresh.session === null)
       return yield* failure("automations", "No replacement session", "scotty runs");
     const replacement = `/api/sessions/${fresh.session}`;

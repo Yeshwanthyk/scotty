@@ -23,8 +23,6 @@ import { Log, waiter } from "./lib/wait.js";
 const check = (ok: boolean, message: string) =>
   ok ? Effect.void : Effect.fail(failure("settings", message, "scotty doctor"));
 
-// The owner's own public skill repositories. In agent-skills, yesh-router links to
-// ../plan/SKILL.md and ships an executable references/decision-trail/log.sh.
 const source = "Yeshwanthyk/agent-skills/skills";
 const other = "Yeshwanthyk/scotty/skills";
 const [router, linked, scotty] = ["yesh-router", "plan", "scotty"];
@@ -32,9 +30,6 @@ const id = crypto.randomUUID().slice(0, 8).toUpperCase();
 const firstMark = `OWNERMARK-A-${id}`;
 const secondMark = `OWNERMARK-B-${id}`;
 
-// Lists what start installed, follows yesh-router's link, checks its script kept its mode, and
-// greps the owner's marker from the agent's instructions.
-// Claude also gets yesh-router as its output style, with its links made absolute.
 const { skills, instructions, style } = {
   codex: {
     skills: "~/.agents/skills",
@@ -63,12 +58,10 @@ const program = Effect.gen(function* () {
   const toggle = (name: string, enabled: boolean) =>
     request(`/api/skills/${name}`, SkillSwitched, { method: "PATCH", body: { enabled } });
 
-  // The owner may use these sources and instructions; note them to put back at the end.
   const owner = yield* request("/api/settings", Settings);
   const before = owner.sources.filter((known) => known.id === source || known.id === other);
   for (const known of before) yield* remove(known.id);
 
-  // 1. Added fresh, every skill is off; a refresh at the same commit finds nothing new.
   const added = yield* add(source);
   yield* check(
     added.added.includes(router) && added.added.includes(linked),
@@ -90,10 +83,8 @@ const program = Effect.gen(function* () {
   yield* add(other);
   console.log(`${source} at ${added.commit.slice(0, 7)}: ${added.added.length} skills, all off`);
 
-  // 2. One skill on in each source and owner instructions; a new session gets both folders whole.
   const setStyle = (skill: string | null) =>
     request("/api/settings/claude-style", StyleSet, { method: "PUT", body: { skill } });
-  // Setting the style switches yesh-router on.
   yield* setStyle(router);
   yield* toggle(scotty, true);
   yield* request("/api/settings/instructions", Saved, {
@@ -135,7 +126,6 @@ const program = Effect.gen(function* () {
   );
   console.log("Start: both sources installed, link resolves, script executable, owner marker");
 
-  // 3. Every skill off and new instructions; a stop and resume picks up both.
   yield* toggle(router, false);
   yield* toggle(scotty, false);
   yield* request("/api/settings/instructions", Saved, {
@@ -159,7 +149,6 @@ const program = Effect.gen(function* () {
   );
   console.log("Resume: no skills, new owner marker present");
 
-  // 4. Clean up, and put back the owner's sources and instructions as they were.
   yield* request(`${prefix}/stop`, View, { method: "POST" });
   yield* remove(source);
   yield* remove(other);

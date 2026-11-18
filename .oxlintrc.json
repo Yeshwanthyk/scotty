@@ -1,8 +1,19 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "extends": ["./node_modules/@interfere/landmines/configs/recommended.json"],
+  "options": {
+    "typeAware": true,
+    "typeCheck": true
+  },
   "plugins": ["typescript"],
   "jsPlugins": ["./scripts/oxlint-plugin-scotty/index.ts"],
-  "ignorePatterns": ["**/dist/**", "vendor/**", "work/**", "ui/src/routeTree.gen.ts"],
+  "ignorePatterns": [
+    "**/dist/**",
+    "vendor/**",
+    "work/**",
+    "ui/src/routeTree.gen.ts",
+    "mac/perf/**"
+  ],
   "rules": {
     "typescript/no-explicit-any": "error",
     "typescript/no-non-null-assertion": "error",
@@ -18,7 +29,10 @@
             "name": "@effect/platform",
             "message": "Platform APIs come from effect and effect/unstable/*."
           },
-          { "name": "@effect/schema", "message": "Schema comes from effect." },
+          {
+            "name": "@effect/schema",
+            "message": "Schema comes from effect."
+          },
           {
             "name": "@cloudflare/sandbox",
             "message": "Scotty drives Cloudflare Containers itself."
@@ -41,6 +55,13 @@
     {
       "files": ["ui/**"],
       "rules": {
+        "landmines-style/no-comments": "off",
+        "landmines-types/no-explicit-return-types": "off"
+      }
+    },
+    {
+      "files": ["ui/**"],
+      "rules": {
         "scotty/no-effect-run": "off",
         "scotty/no-json-parse": "off",
         "scotty/no-type-assertion": "off",
@@ -55,7 +76,9 @@
         "src/session/supervisor-link.ts",
         "e2e/**"
       ],
-      "rules": { "scotty/no-effect-run": "off" }
+      "rules": {
+        "scotty/no-effect-run": "off"
+      }
     },
     {
       "files": [
@@ -66,7 +89,16 @@
         "src/session/invariants.ts",
         "src/places/place.ts"
       ],
-      "rules": { "scotty/pure-fold": "error" }
+      "rules": {
+        "scotty/pure-fold": "error"
+      }
+    },
+    {
+      "files": ["container/scripted/codex-protocol.ts"],
+      "rules": {
+        "landmines-style/no-comments": "off",
+        "typescript/no-duplicate-type-constituents": "off"
+      }
     }
   ]
 }

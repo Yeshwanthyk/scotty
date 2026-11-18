@@ -47,20 +47,22 @@ const until = (at: number | null) => {
     : ` · ${Math.max(0, Math.round((at - Date.now()) / 3_600_000))}h left`;
 };
 
-const fail = (name: string, detail: string, fix: string): Check => ({
+const fail: (name: string, detail: string, fix: string) => Check = (name, detail, fix) => ({
   name,
   status: "fail",
   detail,
   fix,
 });
 
-// A failed check reports the failure's own message and fix.
-const failed = (name: string, exit: Exit.Failure<unknown, CliFailure>, fix: string): Check => {
+const failed: (name: string, exit: Exit.Failure<unknown, CliFailure>, fix: string) => Check = (
+  name,
+  exit,
+  fix,
+) => {
   const error = Option.getOrUndefined(Exit.findErrorOption(exit));
   return fail(name, error?.message ?? "failed", error?.hint ?? fix);
 };
 
-// Every check runs, so one run shows everything left to do.
 export const checks = Effect.gen(function* () {
   const found = yield* Effect.exit(address);
   if (Exit.isFailure(found)) return [failed("Setup", found, "scotty init")];
@@ -76,7 +78,6 @@ export const checks = Effect.gen(function* () {
       api("/api/settings", Settings),
     ]),
   );
-  // Any Worker failure, a 404 from an older deploy included, is fixed by deploying.
   if (Exit.isFailure(worker)) {
     const error = Option.getOrUndefined(Exit.findErrorOption(worker));
     return [...result, fail("Worker", error?.message ?? "no answer", "scotty deploy")];
@@ -116,7 +117,6 @@ export const checks = Effect.gen(function* () {
           }
         : fail("GitHub", "no token", "scotty login github"),
   );
-  // Claude is optional: Codex sessions don't need it.
   const claude = yield* Effect.exit(api("/api/credentials/claude", ClaudeStatus));
   result.push(
     Exit.isFailure(claude)
@@ -133,12 +133,12 @@ export const checks = Effect.gen(function* () {
   return result;
 });
 
-const expiring = (
+const expiring: (
   name: string,
   detail: string,
   status: typeof ChatGptStatus.Type,
   fix: string,
-): Check =>
+) => Check = (name, detail, status, fix) =>
   status.status === "expiring"
     ? {
         name,
@@ -195,7 +195,6 @@ const run = (command: string, args: readonly string[]) =>
     Effect.orElseSucceed(() => ""),
   );
 
-// Piped stdin wins; otherwise the token comes from `gh auth token`.
 export const saveGitHub = (api: Api) =>
   Effect.gen(function* () {
     const piped = process.stdin.isTTY ? "" : (yield* readStdin).trim();
@@ -213,17 +212,12 @@ export const saveGitHub = (api: Api) =>
     });
   });
 
-// Colour and cursor codes, and OSC links ended by BEL or ESC \.
 // oxlint-disable-next-line no-control-regex
 const ansi = /\u001b\[[0-9;?]*[A-Za-z]|\u001b\][^\u0007\u001b]*(\u0007|\u001b\\)/g;
 
-// A line of URL characters only: the rest of a sign-in link wrapped at the terminal width.
 const urlRest = /^[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+$/;
-// The token, with the rest of it on following lines if the output wrapped.
 const tokenPattern = /sk-ant-oat01-[A-Za-z0-9_-]+(?:\r?\n[ \t]*[A-Za-z0-9_-]+[ \t]*(?=\r?\n|$))*/;
 
-// `claude setup-token` redraws its screen. Only the sign-in link and prompts are shown, each once;
-// nothing else is, so no part of the token can be. A line that follows the token is never shown.
 export const saveClaude = (
   api: Api,
   say: (line: string) => void = (line) => process.stderr.write(`${line}\n`),
@@ -278,7 +272,6 @@ export const saveClaude = (
       ),
     );
     const token = process.stdin.isTTY ? yield* fromClaude : (yield* readStdin).trim();
-    // A token cut short (by a wrapped line) would be saved and fail only at session start.
     if (token === undefined || !/^sk-ant-oat01-[A-Za-z0-9_-]{80,}$/.test(token))
       return yield* failure(
         "signin",
@@ -292,7 +285,6 @@ export const saveClaude = (
     });
   });
 
-// Device-code sign-in: the page and code to type in, then polling until it is entered.
 export const startChatGpt = (api: Api) =>
   Effect.gen(function* () {
     const start = yield* api("/api/credentials/chatgpt/start", Started, {

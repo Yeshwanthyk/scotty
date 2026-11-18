@@ -16,11 +16,11 @@ const supervisorKinds = new Set([
   "turn.ended",
   "sup.error",
 ]);
-export const make = (
-  seq: number,
-  kind: string,
-  fields: Record<string, unknown> = {},
-): SessionEvent =>
+export const make: (seq: number, kind: string, fields?: Record<string, unknown>) => SessionEvent = (
+  seq,
+  kind,
+  fields = {},
+) =>
   decodeSessionEvent({
     seq,
     at: seq * 1_000,
@@ -53,9 +53,10 @@ export const start = make(2, "container.start", { gen: 1 });
 export const hello = make(3, "sup.hello", { gen: 1, version: "v1" });
 export const ready = make(4, "workspace.ready", { gen: 1, branch: "main", commit: "abc" });
 export const delivered = make(5, "prompt.delivered", { req: "initial:1" });
-export const boot = (): State => [created, start, hello, ready, delivered].reduce(fold, initial);
+export const boot: () => State = () =>
+  [created, start, hello, ready, delivered].reduce(fold, initial);
 
-export const check = (state: State): void => {
+export const check: (state: State) => void = (state) => {
   expect(invariants(state)).toEqual([]);
   const pending = state.pending;
   expect(deadline(state)).toBe(
@@ -104,7 +105,6 @@ export const kinds = [
   "dial.failed",
   "sup.redial",
   "failed",
-  // A start whose running-cap claim was refused.
   "cap",
   "resume.requested",
   "active",
@@ -140,7 +140,6 @@ export const generated = Arbitrary.schema(
     withReq: Schema.Boolean,
     op: Schema.Literals(["container", "workspace", "dial", "redial", "req:p", "req:initial:1"]),
     dt: Schema.Literals([0, 1_000, 2_000, 30_000, 120_000]),
-    // A generated `created` or `resume.requested` without a size, or with one.
     size: Schema.Literals(["none", ...Size.literals]),
   }),
 );

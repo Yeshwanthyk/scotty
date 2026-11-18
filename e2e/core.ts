@@ -67,8 +67,6 @@ const program = Effect.gen(function* () {
   const url = yield* target(process.env.SCOTTY_URL);
   const token = yield* access(url);
   const request = client({ url, token });
-  // The real agents need the owner's sign-in; the scripted stand-in needs none.
-  // Sign in only when the stored ChatGPT token is missing or near expiry.
   if (real && agent === "codex") {
     const current = yield* request("/api/credentials/chatgpt", ChatGptStatus);
     if (current.status !== "signed-in") yield* signIn(request);
@@ -86,9 +84,6 @@ const program = Effect.gen(function* () {
       title: `e2e core (${agent})`,
       repo: fixtureRepo,
       ...sessionAgent,
-      // Commands must not inherit the ChatGPT token from Codex's config or Claude's token from
-      // its environment. SCOTTY_HATCH, the public preview URL template, is the one variable
-      // they are meant to see.
       prompt: prompt(
         `Run \`${envCheck}\` and reply with only the word ready followed by the number it printed.`,
         `run ${envCheck}\nsay ready {{out}}`,
@@ -101,7 +96,6 @@ const program = Effect.gen(function* () {
   const events = () => request(`${prefix}/log`, Log);
   const first = yield* poll(
     () => request(`${prefix}/conversation`, Conversation),
-    // The reply streams in pieces ("ready", " ", "0"), so only a finished turn is checked.
     (conversation) =>
       conversation.turns[0] !== undefined && conversation.turns[0].state !== "streaming",
   );
@@ -111,8 +105,6 @@ const program = Effect.gen(function* () {
       "Initial answer missing, or SCOTTY_ or Claude token env visible to commands",
       "scotty doctor",
     );
-  // Search matches by title (any case), repository and a word of the first prompt, and a text
-  // that is nowhere in the session finds nothing.
   const found = (text: string) =>
     request(`/api/sessions?q=${encodeURIComponent(text)}`, List).pipe(
       Effect.map((list) => list.sessions.some((item) => item.identity.id === session.id)),
@@ -138,7 +130,6 @@ const program = Effect.gen(function* () {
     items.some((event) => event.kind === "turn.ended" && event.turn === "0"),
   );
 
-  // The owner's own deploy command, to the stage in the Scotty config. Its output is not echoed.
   const redeploy = yield* Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     return yield* spawner.exitCode(
@@ -176,8 +167,6 @@ const program = Effect.gen(function* () {
     (conversation) => conversation.turns[1]?.assistant.toLowerCase().includes("steered") ?? false,
   );
   const accepted = acceptedAgentEvents(after).filter((event) => event.kind === "agent.event");
-  // A redeploy slower than the idle stop resumes the session in a new generation, whose
-  // numbering starts again, so a message is its (gen, n).
   const numbers = accepted.map((event) => `${event.gen}:${event.n}`);
   const prior = acceptedAgentEvents(before).filter((event) => event.kind === "agent.event");
   if (
@@ -190,7 +179,6 @@ const program = Effect.gen(function* () {
       "Duplicate or lost messages after Worker redeploy",
       "scotty doctor",
     );
-  // A steer sent while turn 2 runs joins it: turn 2 ends once, and its answer takes the steer.
   const slowReq = crypto.randomUUID();
   yield* request(`${prefix}/steer`, Reply, {
     method: "POST",

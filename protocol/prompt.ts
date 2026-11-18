@@ -1,7 +1,5 @@
 import { Schema } from "effect";
 
-// Compressed by the composer before sending. Bound the whole prompt so its event and socket
-// command fit the Worker RPC/socket and Durable Object SQLite row limits.
 export const PromptImage = Schema.Struct({
   mediaType: Schema.Literals(["image/jpeg", "image/png", "image/webp", "image/gif"]),
   data: Schema.String.check(
@@ -26,6 +24,5 @@ export const sameImages = (left: readonly PromptImage[] = [], right: readonly Pr
       image.mediaType === right[index]?.mediaType && image.data === right[index]?.data,
   );
 
-// Leave room for request ids and the supervisor command envelope under its 1 MiB cap.
 export const promptFits = (text: string, images: readonly PromptImage[] = []) =>
   new TextEncoder().encode(JSON.stringify({ text, images })).byteLength <= 1_000_000;

@@ -67,7 +67,6 @@ const program = Effect.gen(function* () {
       return yield* replyTo((id) => id === req);
     });
   const preview = new RegExp(`https://\\d{4,5}-${session.id}\\.${base.replaceAll(".", "\\.")}`);
-  // The reply names the URL and the dev server behind it answers with Vite's client.
   const serves = (reply: string) =>
     Effect.gen(function* () {
       const found = preview.exec(reply)?.[0];
@@ -80,19 +79,16 @@ const program = Effect.gen(function* () {
       return found;
     });
 
-  // 1. The agent sets up the repo and starts the dev server.
   yield* ended("0");
   const first = yield* replyTo(() => true);
   const setup = Math.round((Date.now() - started) / 1000);
   console.log(`Setup: ${yield* serves(first)} in ${setup} s`);
 
-  // 2. It left a setup script behind that ends by printing the ready URL.
   const script = yield* answer("1", "Run `.agents/setup` and reply with only its last line");
   const ready = /^Ready: (\S+)$/m.exec(script)?.[1] ?? "";
   yield* check(preview.test(ready), `.agents/setup did not print a Ready URL: ${script}`);
   console.log(`Setup script: ${ready}`);
 
-  // 3. After a stop, a steer brings the dev server back.
   yield* request(`${prefix}/stop`, View, { method: "POST" });
   const resumed = Date.now();
   const again = yield* answer("2", "Bring the dev server back up and reply with only its URL");

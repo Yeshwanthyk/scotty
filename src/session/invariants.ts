@@ -2,9 +2,9 @@ import { live, type State } from "./state.js";
 import { has, reqOp } from "./deadlines.js";
 
 export type Violation = { readonly code: string; readonly detail: string };
-export function invariants(state: State): Violation[] {
+export const invariants: (state: State) => Violation[] = function invariants(state) {
   const violations: Violation[] = [];
-  const check = (ok: boolean, code: string, detail: string): void => {
+  const check: (ok: boolean, code: string, detail: string) => void = (ok, code, detail) => {
     if (!ok) violations.push({ code, detail });
   };
   check(state.lastSeq >= 0, "sequence", "negative event sequence");
@@ -61,12 +61,10 @@ export function invariants(state: State): Violation[] {
     "duplicate or invalid deadline",
   );
   check(
-    state.requests.every(
-      // Before the workspace is ready, pending requests have no deadline yet.
-      (item) =>
-        item.status === "pending"
-          ? has(state.pending, reqOp(item.req)) || !state.ready
-          : !has(state.pending, reqOp(item.req)),
+    state.requests.every((item) =>
+      item.status === "pending"
+        ? has(state.pending, reqOp(item.req)) || !state.ready
+        : !has(state.pending, reqOp(item.req)),
     ),
     "pending",
     "request and deadline disagree",
@@ -106,4 +104,4 @@ export function invariants(state: State): Violation[] {
     "watch without a live generation",
   );
   return violations;
-}
+};

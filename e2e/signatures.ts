@@ -46,7 +46,6 @@ const custom = {
   unhandled: "skip",
 };
 
-// Independent provider-shaped senders: do not use the production signature configuration.
 const deliver = (
   url: string,
   secret: string,
@@ -165,7 +164,6 @@ const program = Effect.gen(function* () {
   );
   for (const preset of ["linear", "slack", "custom"] as const) {
     const name = `e2e-${preset}-${crypto.randomUUID().slice(0, 8)}`;
-    // Linear's provider-issued signing secret is pasted; Slack exercises generation.
     const pasted =
       preset === "linear"
         ? crypto.randomUUID()
