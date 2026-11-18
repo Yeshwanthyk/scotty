@@ -1,5 +1,4 @@
-import { Schema } from "effect";
-import type { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
 export const PlaceKind = Schema.Literals(["cloudflare", "daytona"]);
 export const defaultPlace: typeof PlaceKind.Type = "cloudflare";
@@ -49,8 +48,9 @@ export class PlaceFailed extends Schema.TaggedError<PlaceFailed>()("PlaceFailed"
   op: Schema.Literals(["create", "pause", "resume", "remove", "status", "watch", "port"]),
 }) {}
 
-/** Accepts the WebSocket a `fetch` with `Upgrade: websocket` answered with, if it has one. */
-export const acceptSocket: (response: object) => WebSocket | undefined = (response) => {
+export class PortFailed extends Schema.TaggedError<PortFailed>()("PortFailed", {}) {}
+
+const acceptSocket = (response: object) => {
   const candidate: unknown = Reflect.get(response, "webSocket");
   if (
     !(candidate instanceof WebSocket) ||
@@ -61,6 +61,29 @@ export const acceptSocket: (response: object) => WebSocket | undefined = (respon
   candidate.accept();
   return candidate;
 };
+
+/**
+ * The WebSocket a `fetch` with `Upgrade: websocket` answered with, accepted, or undefined when the
+ * far end refused the upgrade. Interrupted before the answer, it closes the socket when it opens.
+ */
+export const upgrade: (
+  open: () => Promise<object>,
+) => Effect.Effect<WebSocket | undefined, PortFailed> = (open) =>
+  Effect.callback((resume) => {
+    let interrupted = false;
+    open().then(
+      (response) => {
+        if (interrupted) acceptSocket(response)?.close();
+        else resume(Effect.succeed(acceptSocket(response)));
+      },
+      () => {
+        if (!interrupted) resume(Effect.fail(new PortFailed()));
+      },
+    );
+    return Effect.sync(() => {
+      interrupted = true;
+    });
+  });
 
 /** Names one machine (container, sandbox or VM) at a place. Not a secret. */
 export type Handle = string;
@@ -88,16 +111,12 @@ export interface Port {
       readonly body?: ArrayBuffer | ReadableStream<Uint8Array> | null;
       readonly redirect?: "manual";
     },
-  ) => Promise<PortResponse>;
-  /**
-   * Opens a WebSocket to `url`, accepted and ready to use, or undefined when the far end refused
-   * the upgrade. A socket that opens after `signal` aborts is closed.
-   */
+  ) => Effect.Effect<PortResponse, PortFailed>;
+  /** A WebSocket to `url`, as `upgrade` answers it. */
   readonly socket: (
     url: string,
     headers: Record<string, string>,
-    signal: AbortSignal,
-  ) => Promise<WebSocket | undefined>;
+  ) => Effect.Effect<WebSocket | undefined, PortFailed>;
 }
 
 /** How a watched machine ended, or `lost` when the watch broke and says nothing about it. */

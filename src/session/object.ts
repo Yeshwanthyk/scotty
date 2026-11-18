@@ -182,10 +182,9 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         Effect.gen(function* () {
           const target = yield* port(7000);
           const headers = yield* auth(gen);
-          return yield* Effect.tryPromise({
-            try: () => target.fetch(`http://container${path}`, { ...init, headers }),
-            catch: () => new SupervisorFailure({ path }),
-          });
+          return yield* target
+            .fetch(`http://container${path}`, { ...init, headers })
+            .pipe(Effect.mapError(() => new SupervisorFailure({ path })));
         }).pipe(
           Effect.catchTag("NoMachine", () => Effect.fail(new SupervisorFailure({ path }))),
           Effect.flatMap((response) =>
@@ -293,13 +292,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               yield* append({ kind: "container.dial.attempt", gen, attempt }, "session");
             const started = Date.now();
             yield* link
-              .dial(
-                () => target,
-                gen,
-                0,
-                headers,
-                () => current(gen),
-              )
+              .dial(target, gen, 0, headers, () => current(gen))
               .pipe(
                 Effect.timeout("10 seconds"),
                 Effect.onExit((exit) =>
@@ -439,13 +432,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               const headers = yield* auth(action.gen);
               const target = yield* port(7000);
               yield* link
-                .dial(
-                  () => target,
-                  action.gen,
-                  action.after,
-                  headers,
-                  () => current(action.gen),
-                )
+                .dial(target, action.gen, action.after, headers, () => current(action.gen))
                 .pipe(Effect.timeout("10 seconds"));
               yield* watch(action.gen);
               return;
@@ -961,9 +948,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             const headers = new Headers(request.headers);
             for (const [name, value] of Object.entries(yield* auth(gen))) headers.set(name, value);
             return yield* port(7000).pipe(
-              Effect.flatMap((terminal) =>
-                Effect.tryPromise(() => terminal.fetch(target, { headers })),
-              ),
+              Effect.flatMap((terminal) => terminal.fetch(target, { headers })),
               Effect.map((response) => HttpServerResponse.raw(response)),
               Effect.orElseSucceed(() => unavailable),
             );
@@ -979,7 +964,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             redirect: "manual" as const,
           };
           return yield* port(number).pipe(
-            Effect.flatMap((preview) => Effect.tryPromise(() => preview.fetch(target, init))),
+            Effect.flatMap((preview) => preview.fetch(target, init)),
             Effect.map((response) => HttpServerResponse.raw(response)),
             Effect.orElseSucceed(() =>
               HttpServerResponse.text(`Nothing is answering on port ${number} yet`, {

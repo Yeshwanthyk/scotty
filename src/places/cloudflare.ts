@@ -1,6 +1,6 @@
 import type * as cf from "@cloudflare/workers-types";
 import { Effect, Option, Schema } from "effect";
-import { acceptSocket, PlaceFailed, type Exit, type Place, type Port } from "./place.js";
+import { PlaceFailed, PortFailed, upgrade, type Exit, type Place, type Port } from "./place.js";
 
 import { isLoopback } from "../loopback.js";
 
@@ -8,21 +8,15 @@ const ExitStatus = Schema.Struct({ exitCode: Schema.Int });
 const inactivityTimeout = 900_000;
 
 const tcpPort: (container: cf.Container, port: number) => Port = (container, port) => ({
-  fetch: (url, init) => container.getTcpPort(port).fetch(url, init),
-  socket: (url, headers, signal) => {
-    const pending = container
-      .getTcpPort(port)
-      .fetch(url, { headers: { ...headers, Upgrade: "websocket" } });
-    signal.addEventListener("abort", () =>
-      pending.then(
-        (late) => {
-          acceptSocket(late)?.close();
-        },
-        () => undefined,
-      ),
-    );
-    return pending.then((response) => (signal.aborted ? undefined : acceptSocket(response)));
-  },
+  fetch: (url, init) =>
+    Effect.tryPromise({
+      try: () => container.getTcpPort(port).fetch(url, init),
+      catch: () => new PortFailed(),
+    }),
+  socket: (url, headers) =>
+    upgrade(() =>
+      container.getTcpPort(port).fetch(url, { headers: { ...headers, Upgrade: "websocket" } }),
+    ),
 });
 
 /**

@@ -44,11 +44,10 @@ export class SupervisorLink {
 
   /**
    * `stillWanted` is checked once the socket opens; a stale dial closes it and changes nothing.
-   * `port` is called on every attempt: a port handle whose lookup failed (no instance placed yet)
-   * stays failed, and only a new one looks again. `headers` go with the upgrade.
+   * `headers` go with the upgrade.
    */
   dial(
-    port: () => Port,
+    port: Port,
     gen: number,
     after: number,
     headers: Record<string, string>,
@@ -65,11 +64,9 @@ export class SupervisorLink {
     };
     const isCurrent = (socket: WebSocket) => this.socket === socket;
     return Effect.gen(function* () {
-      const candidate = yield* Effect.tryPromise({
-        try: (signal) =>
-          port().socket(`http://container/?gen=${gen}&after=${after}`, headers, signal),
-        catch: () => new DialError({ message: "Supervisor not reachable" }),
-      });
+      const candidate = yield* port
+        .socket(`http://container/?gen=${gen}&after=${after}`, headers)
+        .pipe(Effect.mapError(() => new DialError({ message: "Supervisor not reachable" })));
       if (candidate === undefined) {
         return yield* new DialError({ message: "Supervisor websocket upgrade failed" });
       }
