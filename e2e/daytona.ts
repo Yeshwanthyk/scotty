@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import {
   access,
   CliFailure,
@@ -6,6 +6,7 @@ import {
   Conversation,
   Created,
   failure,
+  Removed,
   Reply,
   target,
   View,
@@ -36,18 +37,31 @@ const get = (url: string, token: string) =>
     catch: () => failure("network", `GET ${url} failed`, "scotty doctor"),
   });
 
-const destroy = (handle: string) =>
+const SandboxState = Schema.fromJsonString(Schema.Struct({ state: Schema.String }));
+const sandbox = (handle: string, method: "GET" | "DELETE") =>
   Effect.tryPromise({
     try: async () => {
       const response = await fetch(`${daytonaApi}/sandbox/${encodeURIComponent(handle)}`, {
-        method: "DELETE",
+        method,
         headers: { authorization: `Bearer ${process.env.DAYTONA_API_KEY ?? ""}` },
       });
-      await response.body?.cancel();
-      return response.status;
+      return { status: response.status, body: await response.text() };
     },
-    catch: () => failure("network", "Daytona DELETE failed", "source work/dev-env.sh"),
+    catch: () => failure("network", `Daytona ${method} failed`, "source work/dev-env.sh"),
   });
+const gone = (handle: string) =>
+  sandbox(handle, "GET").pipe(
+    Effect.map(
+      ({ status, body }) =>
+        status === 404 ||
+        ["destroying", "destroyed"].includes(
+          Option.match(Schema.decodeUnknownOption(SandboxState)(body), {
+            onNone: () => "",
+            onSome: (sandbox) => sandbox.state,
+          }),
+        ),
+    ),
+  );
 
 const program = Effect.gen(function* () {
   if (process.env.DAYTONA_API_KEY === undefined)
@@ -133,8 +147,8 @@ const program = Effect.gen(function* () {
 
   yield* saved("1");
   yield* stop;
-  const deleted = yield* destroy(first[0] ?? "");
-  yield* check(deleted < 300, `Daytona DELETE answered ${deleted}`);
+  const deleted = yield* sandbox(first[0] ?? "", "DELETE");
+  yield* check(deleted.status < 300, `Daytona DELETE answered ${deleted.status}`);
   const restored = yield* answer("2", cat);
   yield* check(restored.includes(marker), "Restore after delete lost marker.txt");
   const after = handles(yield* events());
@@ -145,7 +159,15 @@ const program = Effect.gen(function* () {
   );
   console.log(`Restored: sandbox deleted while asleep, new sandbox ${after[1]} kept marker.txt`);
 
-  yield* request(`${prefix}/stop`, View, { method: "POST" });
+  yield* stop;
+  const removed = yield* request(prefix, Removed, { method: "DELETE" });
+  yield* check(removed.removed, "Session was not removed");
+  for (const handle of after)
+    yield* check(
+      yield* gone(handle),
+      `Sandbox ${handle} is still there after the session was removed`,
+    );
+  console.log("Removed: the session's sandboxes are gone");
 });
 
 Effect.runPromise(program).catch((error: unknown) => {
