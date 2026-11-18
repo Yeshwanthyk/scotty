@@ -1,7 +1,7 @@
-import type * as Cloudflare from "alchemy/Cloudflare";
+import type * as Cloudflare from "@alchemy.run/cloudflare";
 import { Effect, Option, Schema } from "effect";
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { ConnectionName, InternalConnectionName } from "../creds/connections.js";
 import { gitHandler } from "../creds/git.js";
 import { gitHubApiHandler } from "../creds/github-api.js";
@@ -49,8 +49,6 @@ export const egress = (
   }
 };
 
-// Set by the Cloudflare place when it routes a container's built-in or connection egress here
-// (`src/places/cloudflare.ts`). The Worker reads them only from the loopback's props.
 export const LoopbackProps = Schema.Struct({
   session: Schema.String,
   repo: Schema.String,
@@ -59,10 +57,10 @@ export const LoopbackProps = Schema.Struct({
 });
 
 /** A Cloudflare interceptor's target: from its props, and for the shared fetcher, the host. */
-export const loopbackTarget = (
+export const loopbackTarget: (
   props: typeof LoopbackProps.Type,
   host: string | undefined,
-): Target =>
+) => Target = (props, host) =>
   props.connection !== undefined
     ? { kind: "connection", name: props.connection }
     : props.api === "github"
@@ -71,15 +69,14 @@ export const loopbackTarget = (
         ? { kind: "files" }
         : { kind: "git" };
 
-// `/egress/<session>/<host><path>`: the session the token was minted for, then the host and path
-// the container asked for.
 const egressPath = /^\/egress\/([a-z0-9-]{6,32})\/([a-z0-9.-]{1,253})(\/.*)$/;
 export const egressPrefix = "/egress/";
-// Never sent on: the egress token, and anything that names the caller's network (a runner's
-// public IP).
 const callerHeaders = ["authorization", "x-forwarded-for", "x-real-ip"];
 
-const hostTarget = (host: string, connections: readonly string[]): Target | undefined => {
+const hostTarget: (host: string, connections: readonly string[]) => Target | undefined = (
+  host,
+  connections,
+) => {
   if (host === "github.internal") return { kind: "git" };
   if (host === "files.internal") return { kind: "files" };
   if (host === "api.github.com") return { kind: "github-api" };
@@ -105,7 +102,6 @@ export const egressRoute = (request: HttpServerRequest.HttpServerRequest, upstre
     if (session === undefined || host === undefined || path === undefined) return notFound();
     const token = Schema.decodeUnknownOption(egressBearer)(request.headers["authorization"]);
     if (Option.isNone(token)) return refused();
-    // Only the hash crosses to the Creds DO.
     const hash = yield* egressTokenHash(token.value);
     const granted = yield* upstreams.credentials
       .getByName("owner")
@@ -116,9 +112,11 @@ export const egressRoute = (request: HttpServerRequest.HttpServerRequest, upstre
     const target = hostTarget(host, granted.value.connections);
     if (target === undefined) return notFound();
     const raw = yield* HttpServerRequest.toWeb(request);
-    const headers = new Headers(raw.headers);
-    for (const name of [...headers.keys()])
-      if (callerHeaders.includes(name) || name.startsWith("cf-")) headers.delete(name);
+    const headers = new Headers(
+      Array.from(new Headers(raw.headers)).filter(
+        ([name]) => !callerHeaders.includes(name) && !name.startsWith("cf-"),
+      ),
+    );
     const scheme = host === "api.github.com" ? "https" : "http";
     const inner = new Request(`${scheme}://${host}${path}${url.search}`, {
       method: raw.method,

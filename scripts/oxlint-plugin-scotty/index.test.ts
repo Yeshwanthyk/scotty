@@ -1,4 +1,3 @@
-// Each scotty rule passes the code it allows and fails a fixture it exists to catch.
 import { RuleTester } from "oxlint/plugins-dev";
 import { describe, it } from "vitest";
 import plugin from "./index.ts";
@@ -36,7 +35,6 @@ tester.run("no-throw-in-generator", rules["no-throw-in-generator"], {
   valid: [
     "Effect.gen(function* () { return yield* new Missing(); });",
     "function check(ok: boolean) { if (!ok) throw new Error('bad'); }",
-    // A callback inside a generator is its own function.
     "Effect.gen(function* () { yield* Effect.sync(() => { throw new Error('defect'); }); });",
   ],
   invalid: [

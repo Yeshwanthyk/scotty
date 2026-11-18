@@ -1,5 +1,5 @@
 import { Clock, Effect, Fiber, FileSystem, Schedule, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { fixtureRepo, Workspace } from "../../protocol/supervisor.js";
 import type { Agent } from "./agents/agent.js";
 import { notTmpfs, onTmpfs } from "./place.js";
@@ -28,7 +28,6 @@ const exec = (args: string[], cwd: string) =>
               PATH: processEnv("PATH"),
               HOME: processEnv("HOME") || "/home/scotty",
               GIT_TERMINAL_PROMPT: "0",
-              // A transfer stalled for 30 s fails as "RPC failed", which is retried.
               GIT_HTTP_LOW_SPEED_LIMIT: "1000",
               GIT_HTTP_LOW_SPEED_TIME: "30",
             },
@@ -47,7 +46,6 @@ const exec = (args: string[], cwd: string) =>
       }),
     );
   });
-// The container holds no GitHub token, so git's last stderr line is safe to report.
 const described = (error: unknown) => {
   const line =
     error instanceof CommandFailed
@@ -61,20 +59,12 @@ const described = (error: unknown) => {
 };
 const run = (args: string[], cwd: string) => exec(args, cwd).pipe(Effect.mapError(described));
 
-// GitHub throttles Cloudflare's shared egress for minutes at a time (429; the Worker turns a
-// rate-limit 403 into 429), and a proxied transfer can drop. Waiting these out turns a failed
-// start into a slow one; any other 4xx is a real answer. A retry often succeeds at once, so
-// waits start at 1 s and grow to 30 s.
 const transient = (error: unknown) =>
   error instanceof CommandFailed &&
   /error: (429|5\d\d)|RPC failed|early EOF|Connection reset/.test(error.stderr) &&
   !/error: 4(?!29)\d\d/.test(error.stderr);
 const backoff = Schedule.min([Schedule.exponential("1 second"), Schedule.spaced("30 seconds")]);
-// Clone and fetch share one budget: no attempt starts after ~270 s (the budget plus one 30 s
-// wait), leaving ~90 s of the DO's 360 s workspace deadline (deadlines.ts) for that attempt,
-// the restore and Codex's start.
 const retryBudget = 240_000;
-// Each retried failure is reported in workspace.ready, so a slow start shows why.
 const fromGitHub = (args: string[], cwd: string, retried: string[], until: number) =>
   exec(args, cwd).pipe(
     Effect.tapError((error) =>
@@ -93,8 +83,6 @@ const fromGitHub = (args: string[], cwd: string, retried: string[], until: numbe
 const workspaceRoot = () => processEnv("SCOTTY_WORKSPACE_ROOT") || "/workspace";
 const saveFile = () => `${workspaceRoot()}/save.tar`;
 
-// Only what the base commit cannot rebuild: changed and untracked files, deleted paths,
-// and the agent's state file for the session. Ignored files (dependencies, builds) are left out.
 const saveScript = `set -e
 out="$1"; base="$2"; home="$3"; kind="$4"; dir="$5"; name="$6"; s=$(mktemp -d)
 git diff -z --name-only --no-renames --diff-filter=D "$base" > "$s/deleted"
@@ -131,8 +119,6 @@ export const storeSave = (tar: Uint8Array) =>
     yield* fs.writeFile(restoreFile(), tar).pipe(Effect.mapError(() => failure()));
   });
 
-// The marker says which session's workspace this disk holds. It is written once the workspace and
-// the agent are ready, so a disk without one has nothing a resume could use.
 const markerFile = () => `${workspaceRoot()}/marker.json`;
 
 export const readMarker = Effect.gen(function* () {
@@ -145,12 +131,10 @@ export const writeMarker = (workspace: Workspace) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const file = markerFile();
-    // A stop between the write and the rename leaves the old marker whole.
     yield* fs.writeFileString(`${file}.tmp`, JSON.stringify(workspace));
     yield* fs.rename(`${file}.tmp`, file);
   }).pipe(Effect.mapError(() => new WorkspaceError({ message: "could not write the marker" })));
 
-// Whether the agent's state file for a thread is on disk.
 export const hasState = (agent: Agent, thread: string) => {
   const state = agent.files.state(thread);
   return run(
@@ -174,9 +158,6 @@ export type Egress = { readonly url: string; readonly token: string };
 const egressUrl = /^https:\/\/[A-Za-z0-9.:/_~%-]+$/;
 const quoted = (value: string) => `"${value.replace(/[\\"]/g, (character) => `\\${character}`)}"`;
 
-// Outside Cloudflare nothing intercepts github.internal, so git reaches it through the Worker's
-// /egress route with this gen's token as a bearer token, which Cloudflare's logs redact. The token is only in an included file on the tmpfs; the
-// global config, on the disk, names that file.
 const routeThroughEgress = (egress: Egress) =>
   Effect.gen(function* () {
     const url = egress.url.replace(/\/+$/, "");
@@ -203,7 +184,6 @@ export const prepareWorkspace = (
   git: { readonly name: string; readonly email: string },
   agent: Agent,
   resume: { readonly commit: string } | undefined,
-  // This session's workspace, kept on the disk: no clone and no save to unpack.
   disk: Workspace | undefined,
   egress: Egress | undefined,
 ) =>
@@ -219,7 +199,6 @@ export const prepareWorkspace = (
     yield* run(["git", "check-ref-format", "--branch", base], root);
     yield* run(["git", "check-ref-format", "--branch", branch], root);
     const dir = `${root}/repo`;
-    // The Session DO routes github.internal to the Worker, which adds the token; git here has none.
     const config = {
       ...(egress === undefined
         ? { "url.http://github.internal/api/git/.insteadOf": "https://github.com/" }
@@ -233,9 +212,6 @@ export const prepareWorkspace = (
       yield* run(["git", "rev-parse", "--verify", "HEAD"], dir);
       return { dir, commit: disk.base, ms: (yield* Clock.currentTimeMillis) - started, retried };
     }
-    // A disk this start can't use (another session's, or one stopped between the clone and the
-    // marker) is cleared, so the clone has an empty place. The marker goes first: a stop partway
-    // leaves no marker naming a half-removed repository.
     yield* run(["rm", "-f", "--", markerFile()], root);
     yield* run(["rm", "-rf", "--", dir], root);
     yield* fromGitHub(
@@ -272,7 +248,6 @@ export const prepareWorkspace = (
     return { dir, commit, ms, retried };
   });
 
-// Skill sources arrive over HTTP before start, like a save: GitHub tarballs named by commit.
 const skillsDir = () => `${workspaceRoot()}/skills`;
 const commitFile = /^[0-9a-f]{40}$/;
 
@@ -284,9 +259,6 @@ export const storeSkills = (commit: string, tarball: Uint8Array) =>
     yield* fs.writeFile(`${skillsDir()}/${commit}.tar.gz`, tarball).pipe(Effect.mapError(failure));
   });
 
-// Each source's folder is unpacked whole into the agent's skills folder, so a skill's links to
-// files in another skill still resolve. The agent's instructions file becomes Scotty's
-// instructions followed by the owner's.
 const settingsScript = `set -e
 skills="$1"; instructions="$2"; incoming="$3"; owner="$4"; shift 4
 rm -rf "$skills" && mkdir -p "$skills"
@@ -322,10 +294,6 @@ export const installSettings = (
     workspaceRoot(),
   );
 
-// The owner's style skill as a Claude output style, as the owner's build-mode script makes it:
-// the skill's text without its frontmatter, its relative links made absolute so they resolve
-// from any cwd, and keep-coding-instructions so Claude Code's own prompt stays. The folder is
-// rebuilt on every start, so a resume without a style has none.
 export const installStyle = (agent: Agent, name: string | undefined) =>
   Effect.gen(function* () {
     const styles = agent.files.styles;

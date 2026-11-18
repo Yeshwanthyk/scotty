@@ -1,6 +1,5 @@
 import { Config, Effect, Schema } from "effect";
 
-// A stage's model and reasoning effort for one agent.
 export const AgentSettings = Schema.Struct({
   model: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/)),
   effort: Schema.Literals(["low", "medium", "high", "xhigh", "max"]),
@@ -22,7 +21,6 @@ export const AgentDefaults = Schema.Struct({
   claude: AgentSettings,
 });
 
-// Owner choices take precedence over deployment defaults. Only new agent starts read them.
 export const stageAgentDefaults = (saved: typeof AgentDefaults.Type | null) =>
   Effect.gen(function* () {
     if (saved !== null) return saved;

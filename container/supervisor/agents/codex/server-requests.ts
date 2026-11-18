@@ -1,6 +1,4 @@
-// A server request always gets one response. These replies deny permissions and
-// unsupported interactive/tool methods; no request is delegated to a client.
-export const serverReply = (method: string, id: string | number): string => {
+export const serverReply: (method: string, id: string | number) => string = (method, id) => {
   if (
     method === "item/commandExecution/requestApproval" ||
     method === "item/fileChange/requestApproval"

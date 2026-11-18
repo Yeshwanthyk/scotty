@@ -2,7 +2,7 @@ import { Controller } from "./controller.js";
 import { exit } from "./runtime.js";
 import { serve } from "./socket.js";
 
-async function main(): Promise<void> {
+const main: () => Promise<void> = async function main() {
   const controller = new Controller();
   controller.bind(
     await serve((message) => controller.receive(message), {
@@ -12,8 +12,7 @@ async function main(): Promise<void> {
       shutdown: controller.shutdown(),
     }),
   );
-}
-// A boot that can't load the key or read the disk exits, so the place sees the container stop.
+};
 main().catch((error: unknown) => {
   console.error("supervisor boot failed:", error instanceof Error ? error.message : String(error));
   exit(1);

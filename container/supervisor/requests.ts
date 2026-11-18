@@ -1,13 +1,10 @@
 import { Deferred, Effect, Exit } from "effect";
 import type { AgentError } from "./runner.js";
 
-// The supervisor owns one result per req for its container generation. Recording the
-// attempt before calling the runner makes an in-flight resend join the same result;
-// a settled resend replays that result and never calls the agent again.
 export class Requests {
   private readonly results = new Map<string, Deferred.Deferred<Exit.Exit<void, AgentError>>>();
 
-  run(req: string, action: Effect.Effect<void, AgentError>): Effect.Effect<void, AgentError> {
+  run(req: string, action: Effect.Effect<void, AgentError>) {
     return Effect.gen({ self: this }, function* () {
       const entry = yield* Effect.sync(() => {
         const existing = this.results.get(req);
@@ -22,6 +19,6 @@ export class Requests {
       }
       const outcome = yield* Deferred.await(entry.result);
       if (Exit.isFailure(outcome)) return yield* Effect.failCause(outcome.cause);
-    });
+    }) satisfies Effect.Effect<void, AgentError>;
   }
 }

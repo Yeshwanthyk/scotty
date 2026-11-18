@@ -1,7 +1,7 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { Config, Effect, Schema } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { ConnectionUrl } from "../src/creds/connections.js";
 
 const Registration = Schema.Struct({
@@ -70,7 +70,6 @@ export class McpTestObject extends Cloudflare.DurableObject<McpTestObject>()(
       yield* sql`CREATE TABLE IF NOT EXISTS clients (id TEXT PRIMARY KEY, redirect TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS codes (code TEXT PRIMARY KEY, client TEXT NOT NULL, redirect TEXT NOT NULL, challenge TEXT NOT NULL, resource TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS tokens (access TEXT PRIMARY KEY, refresh TEXT UNIQUE NOT NULL, client TEXT NOT NULL, resource TEXT NOT NULL, generation INTEGER NOT NULL, expires INTEGER NOT NULL, writes INTEGER NOT NULL)`;
-      // Test modes live in storage: an idle Durable Object is evicted between e2e steps.
       yield* sql`CREATE TABLE IF NOT EXISTS modes (client TEXT PRIMARY KEY, unavailable INTEGER NOT NULL DEFAULT 0, non_rotating INTEGER NOT NULL DEFAULT 0, unauthorized INTEGER NOT NULL DEFAULT 0)`;
       const modesOf = (client: string) =>
         Effect.gen(function* () {

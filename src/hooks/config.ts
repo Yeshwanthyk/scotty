@@ -68,10 +68,10 @@ export const CustomInboundConfig = InboundConfig.check(
   ),
 );
 
-export const signingKey = (
+export const signingKey: (
   key: InboundConfig["key"],
   secret: string,
-): Uint8Array<ArrayBuffer> | undefined => {
+) => Uint8Array<ArrayBuffer> | undefined = (key, secret) => {
   if (key.encoding === "raw")
     return secret.length > 0 ? new TextEncoder().encode(secret) : undefined;
   if (!secret.startsWith(key.prefix)) return undefined;

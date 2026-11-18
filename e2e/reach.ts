@@ -21,7 +21,6 @@ import { Log, waiter } from "./lib/wait.js";
 
 const check = (ok: boolean, message: string) =>
   ok ? Effect.void : Effect.fail(failure("reach", message, "scotty log <id>"));
-// Keep unexpected fields too, so a contract decoder cannot hide a leaked credential.
 const RawConnection = Schema.StructWithRest(
   Schema.Struct({ name: Schema.String, kind: Schema.String }),
   [Schema.Record(Schema.String, Schema.Unknown)],
@@ -42,10 +41,8 @@ const Probe = Schema.Struct({
 const id = crypto.randomUUID().slice(0, 8);
 const tokenName = `reach-token-${id}`;
 const mcpName = `reach-mcp-${id}`;
-// Disposable sentinels, not live service credentials. Echoed auth is hashed inside the stand-in.
 const token = `reach-token-secret-${crypto.randomUUID()}`;
 const mcp = `reach-mcp-secret-${crypto.randomUUID()}`;
-// Reach reads every MCP POST as JSON-RPC, so the probe body is one.
 const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" });
 const script = (method: "GET" | "POST" | "DELETE", kind: "token" | "mcp") =>
   `call ${JSON.stringify({
@@ -78,7 +75,6 @@ const program = Effect.gen(function* () {
       );
   });
   yield* Effect.gen(function* () {
-    // httpbingo is a public echo service. No Scotty production route exists for the test.
     for (const input of [
       {
         kind: "token" as const,
@@ -182,7 +178,6 @@ const program = Effect.gen(function* () {
       });
     for (const method of ["GET", "POST", "DELETE"] as const)
       yield* verify(yield* steer(script(method, "mcp")), method, "mcp");
-    // The probe never receives a sentinel as input. Reading env/configs can expose a bad delivery.
     const environment = yield* steer(
       'run env; find "$HOME/.codex" "$HOME/.claude" -maxdepth 2 -type f \\( -name "config.toml" -o -name ".mcp.json" -o -name "settings.json" \\) -exec cat {} \\; 2>/dev/null; true\nsay {{out}}',
     );
@@ -193,7 +188,6 @@ const program = Effect.gen(function* () {
         !text.includes(token) && !text.includes(mcp),
         "Secret found in container environment/config, conversation or event log",
       );
-    // A cold resume must reinstall the interceptor, with the same metadata-only agent config.
     yield* poll(events, (log) =>
       log.some((event) => event.kind === "save.done" && event.turn === String(turn)),
     );

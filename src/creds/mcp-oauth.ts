@@ -73,7 +73,6 @@ class McpRefreshFailure extends Schema.TaggedError<McpRefreshFailure>()("McpRefr
   kind: Schema.Literals(["rejected", "unavailable"]),
 }) {}
 
-// The SDK's fetch hook is a host boundary. Refuse redirects before credentials can cross hosts.
 const oauthFetch: typeof fetch = async (input, init) => {
   Schema.decodeUnknownSync(ConnectionUrl)(
     typeof input === "string" ? input : input instanceof URL ? input.href : input.url,

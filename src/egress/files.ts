@@ -1,10 +1,9 @@
-import type * as Cloudflare from "alchemy/Cloudflare";
+import type * as Cloudflare from "@alchemy.run/cloudflare";
 import { Effect, Exit, Option, Schema, SchemaTransformation } from "effect";
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import type SessionObject from "../session/object.js";
 
-// scotty-attach uploads: one of these types, at most 25 MB, name and caption URI-encoded.
 const FileType = Schema.Literals([
   "image/png",
   "image/jpeg",

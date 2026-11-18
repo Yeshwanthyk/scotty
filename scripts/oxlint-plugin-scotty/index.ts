@@ -1,5 +1,3 @@
-// Scotty's oxlint rules: the parts of AGENTS.md and .agents/skills/ a machine
-// can check. Which files are host boundaries is decided in .oxlintrc.json.
 import type { RuleTester } from "oxlint/plugins-dev";
 
 type Rule = Parameters<RuleTester["run"]>[1];
@@ -7,18 +5,18 @@ type Create = NonNullable<Rule["create"]>;
 type Visitor = ReturnType<Create>;
 type NodeOf<K extends string> = Parameters<NonNullable<Visitor[K]>>[0];
 
-// `object.property`, where both sides are plain names (no computed access).
-const memberPath = (node: NodeOf<"MemberExpression">): readonly [string, string] | undefined =>
+const memberPath: (node: NodeOf<"MemberExpression">) => readonly [string, string] | undefined = (
+  node,
+) =>
   !node.computed && node.object.type === "Identifier" && node.property.type === "Identifier"
     ? [node.object.name, node.property.name]
     : undefined;
 
-const rule = (description: string, create: Create): Rule => ({
+const rule: (description: string, create: Create) => Rule = (description, create) => ({
   meta: { type: "problem", docs: { description } },
   create,
 });
 
-// modeling-effect-errors: Effect.run* lives only at a host boundary.
 const noEffectRun = rule("Run Effects only at a host boundary", (context) => ({
   MemberExpression(node) {
     const path = memberPath(node);
@@ -31,7 +29,6 @@ const noEffectRun = rule("Run Effects only at a host boundary", (context) => ({
   },
 }));
 
-// decoding-effect-boundaries: JSON text is decoded with Schema.fromJsonString.
 const noJsonParse = rule("Decode JSON text with Schema", (context) => ({
   MemberExpression(node) {
     const path = memberPath(node);
@@ -45,7 +42,6 @@ const noJsonParse = rule("Decode JSON text with Schema", (context) => ({
   },
 }));
 
-// AGENTS.md: no casts that hide a type. `as const` is not a cast.
 const noTypeAssertion = rule("No type assertions", (context) => {
   const report = (node: NodeOf<"TSAsExpression"> | NodeOf<"TSTypeAssertion">) =>
     context.report({
@@ -66,7 +62,6 @@ const noTypeAssertion = rule("No type assertions", (context) => {
   };
 });
 
-// modeling-effect-errors: a failure inside Effect.gen is `yield* new Tagged(...)`.
 const noThrowInGenerator = rule("No throw inside a generator", (context) => {
   const generators: Array<boolean> = [];
   const enter = (node: { readonly generator?: boolean }) =>
@@ -91,8 +86,6 @@ const noThrowInGenerator = rule("No throw inside a generator", (context) => {
   };
 });
 
-// AGENTS.md: fold.ts reads no clock and no random numbers, and does no I/O. A global is matched
-// bare or through `globalThis`, `self` or `window`, including when it is destructured.
 const impure = new Map([
   ["Date", new Set(["now"])],
   ["Math", new Set(["random"])],
@@ -103,8 +96,7 @@ const impure = new Map([
 const impureCalls = new Set(["fetch", "setTimeout", "setInterval", "queueMicrotask"]);
 const globalObjects = new Set(["globalThis", "self", "window"]);
 type Expression = NodeOf<"MemberExpression">["object"];
-// `Date`, or `globalThis.Date`: the global an expression names.
-const globalName = (node: Expression): string | undefined => {
+const globalName: (node: Expression) => string | undefined = (node) => {
   if (node.type === "Identifier") return node.name;
   if (node.type !== "MemberExpression") return undefined;
   const path = memberPath(node);
@@ -139,7 +131,6 @@ const pureFold = rule("The fold is pure", (context) => {
           property.type === "Property" && !property.computed && property.key.type === "Identifier"
             ? property.key.name
             : undefined;
-        // A rest element or computed key could take any member.
         if (members === undefined || key === undefined || members.has(key)) {
           report(node, `${name}.${key ?? "*"}`);
           return;

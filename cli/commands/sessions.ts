@@ -1,5 +1,5 @@
 import { Effect, Option } from "effect";
-import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/cli";
 import { PlaceKind, Size } from "../../src/places/place.js";
 import { titleFrom } from "../../src/session/title.js";
 import { Conversation, Created, List, Log, View } from "../client.js";
@@ -109,7 +109,6 @@ export const ls = Command.make(
     }),
 );
 
-// The latest start's steps, in seconds from its wake: "started 2 · machine 0.4s · hello 1.2s · …".
 const startLine = (start: {
   readonly gen: number;
   readonly created: number | null;
@@ -199,7 +198,6 @@ export const log = Command.make("log", { id: Argument.String("id") }, ({ id }) =
   }),
 );
 
-// Opens the web app, or one session in it, in the default browser.
 export const open = Command.make(
   "open",
   { id: Argument.String("id").pipe(Argument.optional) },

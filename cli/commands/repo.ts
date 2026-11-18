@@ -1,5 +1,5 @@
 import { Effect, Option } from "effect";
-import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/cli";
 import { Size } from "../../src/places/place.js";
 import { Repos, RepoSize } from "../client.js";
 import { bold, dim, green, output, table, usage, withClient } from "./common.js";
@@ -18,7 +18,6 @@ const list = Command.make("ls", {}, () =>
   }),
 );
 
-// --default goes back to standard-1 for new sessions; existing sessions keep their size.
 const set = Command.make(
   "set",
   {

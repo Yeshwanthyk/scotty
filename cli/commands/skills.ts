@@ -1,5 +1,5 @@
 import { Effect, Option } from "effect";
-import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/cli";
 import { Settings, SkillSwitched, SourceRemoved, SourceSaved, StyleSet } from "../client.js";
 import { ago, bold, dim, green, output, table, usage, withClient } from "./common.js";
 
@@ -64,7 +64,6 @@ const add = Command.make("add", { source: Argument.String("source") }, ({ source
   }),
 );
 
-// No source refreshes every one.
 const refresh = Command.make(
   "refresh",
   { source: Argument.String("source").pipe(Argument.optional) },
@@ -115,7 +114,6 @@ const toggle = (name: "on" | "off") =>
     }),
   );
 
-// Claude sessions run the skill as their output style; setting one switches the skill on.
 const style = Command.make(
   "style",
   {

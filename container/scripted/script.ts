@@ -1,10 +1,3 @@
-// The scripts the e2e stand-ins for Codex and Claude read from each prompt, one directive per line:
-//   run <command>   runs it with bash in the repository, as the agent's shell tool would
-//   sleep <seconds> the same as `run sleep <seconds>`, so an interrupt stops it
-//   call <JSON>     calls {url, method?, headers?, body?}; echo auth values are hashed, not emitted
-//   say <text>      replies with the text; {{out}} is the last command's output, trimmed, and
-//                   {{recall}} the session's first prompt, read back from its saved state file
-// Any other line is replied as it is. A steer adds its lines to the running turn.
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { Effect, Option, Schema } from "effect";
@@ -24,7 +17,6 @@ const Echo = Schema.Struct({
 });
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 
-// Public echo targets reflect credentials. Only digests reach tool output or a saved transcript.
 export const call = (options: typeof Call.Type, signal: AbortSignal) =>
   Effect.runPromise(
     Effect.gen(function* () {
@@ -83,7 +75,7 @@ export type Step =
 
 export const lines = (text: string) => text.split("\n").filter((line) => line.trim() !== "");
 
-export const step = (line: string): Step => {
+export const step: (line: string) => Step = (line) => {
   const trimmed = line.trim();
   const [word = ""] = trimmed.split(/\s+/);
   const argument = trimmed.slice(word.length).trim();
@@ -98,16 +90,11 @@ export const step = (line: string): Step => {
   return { kind: "say", text: word === "say" ? argument : trimmed };
 };
 
-// recall reads the state file, so it runs only when the text asks for it; what it brings back
-// is inserted as it is.
 export const fill = (text: string, out: string, recall: () => string) => {
   const filled = text.replaceAll("{{out}}", out);
   return filled.includes("{{recall}}") ? filled.replaceAll("{{recall}}", recall()) : filled;
 };
 
-// Runs a command with bash; `started` receives the child so an interrupt can kill it. Like the
-// agents' shell tools it returns when bash exits, not when every process holding its output
-// does: a server started with `&` keeps the pipe open. Output already written is drained first.
 export const shell = (command: string, cwd: string, started: (child: ChildProcess) => void) =>
   new Promise<{ output: string; exitCode: number }>((resolve) => {
     const child = spawn("bash", ["-lc", command], { cwd, stdio: ["ignore", "pipe", "pipe"] });

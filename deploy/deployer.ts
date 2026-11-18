@@ -1,5 +1,3 @@
-// Deploys a release to a stage, and removes a stage, with direct Cloudflare API calls. Every
-// resource is found by its name, `scotty-<stage>…`, so nothing is kept between runs.
 import { createHash, randomBytes } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
@@ -14,8 +12,8 @@ import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import * as HttpClient from "effect/unstable/http/HttpClient";
-import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import type { Config } from "../cli/config.ts";
 import {
   defaultClaudeSettings,
@@ -25,7 +23,6 @@ import { copyImage } from "./image.ts";
 
 export const compatibilityDate = "2026-09-01";
 
-// release.json: which Scotty this is and the supervisor image it runs.
 export const Release = Schema.Struct({
   version: Schema.String,
   image: Schema.String,
@@ -43,10 +40,10 @@ const read = (path: string) =>
     catch: () => new DeployError({ message: `Could not read ${path}` }),
   });
 
-const walk = async (dir: string): Promise<string[]> =>
+const walk: (dir: string) => Promise<string[]> = async (dir) =>
   (
     await Promise.all(
-      (await readdir(dir, { withFileTypes: true })).map((entry) =>
+      (await readdir(dir, { withFileTypes: true })).map(async (entry) =>
         entry.isDirectory() ? walk(join(dir, entry.name)) : [join(dir, entry.name)],
       ),
     )
@@ -71,9 +68,6 @@ const types: Record<string, string> = {
   webmanifest: "application/manifest+json",
 };
 
-// Distilled can't say what a durable_object container app needs: its create sends max_instances
-// and an image, which such an app refuses, its list expects both back, and its Worker upload has
-// no image map. These calls go to the API as Cloudflare documents them.
 const Envelope = Schema.Struct({ success: Schema.Boolean, result: Schema.Unknown });
 const cloudflare = <S extends Schema.Top>(
   path: string,
@@ -93,7 +87,6 @@ const cloudflare = <S extends Schema.Top>(
           : HttpClientRequest.bodyJsonUnsafe(base, init.body);
     const response = yield* (yield* HttpClient.HttpClient).execute(request);
     const body = yield* response.text;
-    // Any answer that isn't a success with the expected result fails with what Cloudflare said.
     const failed = new DeployError({
       message: `Cloudflare ${init.method} ${path} answered HTTP ${response.status}: ${body.slice(0, 1000)}`,
     });
@@ -116,7 +109,6 @@ const containerApps = (accountId: string) =>
   cloudflare(
     `/accounts/${accountId}/containers/applications`,
     Schema.Array(
-      // The list is account-wide; other apps may not say their policy.
       Schema.Struct({
         id: Schema.String,
         name: Schema.String,
@@ -125,8 +117,6 @@ const containerApps = (accountId: string) =>
     ),
   );
 
-// Cloudflare waits on a new Worker before its domain attaches, and on a Worker's objects before
-// its bucket can go.
 const retry = { schedule: Schedule.spaced("3 seconds"), times: 40 } as const;
 
 const names = (config: Config) => ({
@@ -142,8 +132,6 @@ const names = (config: Config) => ({
   route: `*.${config.domain}/*`,
 });
 
-// Uploads the files Cloudflare doesn't have yet; a file's hash is wrangler's, so unchanged files
-// are skipped.
 const uploadAssets = (accountId: string, scriptName: string, dir: string) =>
   Effect.gen(function* () {
     const byHash = new Map<string, { path: string; type: string }>();
@@ -183,7 +171,6 @@ const uploadAssets = (accountId: string, scriptName: string, dir: string) =>
     return jwt;
   });
 
-// `image` replaces the release's image with one built FROM it.
 export const deployStage = (
   config: Config,
   dir: string,
@@ -203,7 +190,6 @@ export const deployStage = (
         message: "The OAuth test Worker requires a separate host on a stage other than main",
       });
     const say = (text: string) => Effect.sync(() => progress(text));
-    // The preview route matches the Worker's own host too; the Worker tells them apart by name.
     if (!host.endsWith(`.${domain}`) || /^\d{1,5}-[a-z0-9-]{6,32}\./.test(host))
       return yield* new DeployError({
         message: `${host} must be a name under ${domain} that is not <port>-<id>.${domain}`,
@@ -228,7 +214,6 @@ export const deployStage = (
       ),
     );
 
-    // A durable_object app starts only images Cloudflare has prepared.
     yield* say("Preparing the container image");
     const prepared = yield* cloudflare(
       `/accounts/${accountId}/containers/image-preparations`,
@@ -246,8 +231,6 @@ export const deployStage = (
         message: `Cloudflare did not prepare ${copied}: ${prepared.reason ?? prepared.status}`,
       });
 
-    // A container app's scheduling policy can't change. One made under `default` is deleted
-    // with its containers and made again; the Creds DO and its storage are untouched.
     const apps = yield* containerApps(accountId);
     for (const app of apps)
       if (app.name === name.app && app.scheduling_policy !== "durable_object") {
@@ -302,7 +285,6 @@ export const deployStage = (
         { type: "durable_object_namespace", name: "SessionObject", class_name: "SessionObject" },
         { type: "r2_bucket", name: "SessionArtifacts", bucket_name: name.bucket },
         { type: "assets", name: "ASSETS" },
-        // Alchemy's runtime reads these to find its bindings.
         text("ALCHEMY_PHASE", "runtime"),
         text("ALCHEMY_WORKER_NAME", name.script),
         text("ALCHEMY_STACK_NAME", "scotty"),
@@ -316,14 +298,11 @@ export const deployStage = (
         text("SCOTTY_CLAUDE_EFFORT", claude.effort),
         text("SCOTTY_MAX_RUNNING", String(config.maxRunning ?? 20)),
       ],
-      // Sessions start the image named `session` (src/places/cloudflare.ts). Running containers
-      // keep the image they started with; a new image map reaches new starts only.
       containers: [{ class_name: "SessionObject", images: { session: copied } }],
       ...(migrated
         ? {}
         : { migrations: { new_tag: "v1", new_sqlite_classes: ["CredsObject", "SessionObject"] } }),
       observability: { enabled: true, logs: { enabled: true, invocation_logs: true } },
-      // The supervisor secret is set once, below, and kept by every later upload.
       keep_bindings: ["secret_text"],
     };
     const form = new FormData();
@@ -335,9 +314,6 @@ export const deployStage = (
       { method: "PUT", body: form },
     );
 
-    // The Session DO derives each session's supervisor key from this secret. It is made here
-    // once per stage, never printed, and changing it would lock out every machine that keeps a
-    // disk, so a deploy only adds it when it is missing.
     const secrets = yield* Workers.listScriptSecrets
       .items({ accountId, scriptName: name.script })
       .pipe(Stream.runCollect);
@@ -357,11 +333,8 @@ export const deployStage = (
     )?.id;
     if (!namespaceId)
       return yield* new DeployError({ message: "Cloudflare made no SessionObject namespace" });
-    // The cap is Scotty's (maxRunning), not the app's, and the image and size come with each start,
-    // so the app is only its name, policy and namespace.
     if (!apps.some((app) => app.name === name.app && app.scheduling_policy === "durable_object")) {
       yield* say("Setting up the container app");
-      // A create that raced the old app's delete, or made something else, fails here.
       yield* cloudflare(
         `/accounts/${accountId}/containers/applications`,
         Schema.Struct({ id: Schema.String, scheduling_policy: Schema.Literal("durable_object") }),
@@ -421,7 +394,6 @@ export const deployStage = (
         service: name.mcpTest,
         zoneId,
       }).pipe(Effect.retry(retry));
-      // The stage's wildcard route outranks a custom domain; a more specific route does not.
       yield* ensureRoute(zoneId, `${test.host}/*`, name.mcpTest);
     }
 
@@ -437,24 +409,18 @@ export const deployStage = (
     ];
     const policies = [{ decision: "allow", include: [{ email: { email } }] }];
     yield* ensureAccessApp(accountId, name.access, destinations, policies);
-    // Senders of signed webhooks have no Access login; the Worker verifies their signatures. This
-    // app, with a path more specific than the Worker's, lets `/hooks/*` alone through.
     yield* ensureAccessApp(
       accountId,
       name.hooks,
       [{ type: "public", uri: `${host}/hooks/*` }],
       [{ name: "signed webhooks", decision: "bypass", include: [{ everyone: {} }] }],
     );
-    // Containers outside Cloudflare have no Access login; the Worker checks each call's egress
-    // token, scoped to one session and gen. This app lets `/egress/*` alone through.
     yield* ensureAccessApp(
       accountId,
       name.egress,
       [{ type: "public", uri: `${host}/egress/*` }],
       [{ name: "session egress", decision: "bypass", include: [{ everyone: {} }] }],
     );
-    // MCP clients sign in by OAuth, with Access as the server: Managed OAuth registers each
-    // client and sends the Worker the usual Access identity. Only these redirects may register.
     yield* ensureAccessApp(
       accountId,
       name.mcp,
@@ -471,7 +437,6 @@ export const deployStage = (
             "https://claude.com/api/mcp/auth_callback",
             "https://chatgpt.com/connector_platform_oauth_redirect",
             "https://chatgpt.com/connector/oauth/*",
-            // Executor (executor.sh), the owner's tool hub (owner, 2026-10-13).
             "https://executor.sh/api/oauth/callback",
           ],
         },
@@ -517,7 +482,6 @@ const ensureAccessApp = (
       accountId,
       type: "self_hosted",
       name,
-      // One sign-in lasts 30 days on the phone and the CLI; Access's default is 24 hours (owner, 2026-10-19).
       sessionDuration: "720h",
       destinations,
       policies,
@@ -534,7 +498,6 @@ const accessApps = (accountId: string, name: string) =>
     Effect.map((apps) => [...apps]),
   );
 
-// Only the record the deploy made; another AAAA record on the name is the owner's.
 const wildcardRecords = (zoneId: string, wildcard: string) =>
   Dns.listRecords.items({ zoneId, name: { exact: wildcard }, type: "AAAA" }).pipe(
     Stream.filter((record) => record.content === "100::"),
@@ -614,7 +577,6 @@ export const removeStage = (config: Config, progress: (text: string) => void) =>
       if (record.id) yield* Dns.deleteRecord({ zoneId, dnsRecordId: record.id });
   });
 
-// What of a stage is still in the account, by name.
 export const leftovers = (config: Config) =>
   Effect.gen(function* () {
     const { accountId, zoneId } = config;

@@ -22,7 +22,6 @@ export const TurnNotice = Schema.Struct({
   }),
 });
 
-// Keep the raw notification separate from the fields used for routing.
 export const decodeRpcLine = (line: string) =>
   Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(line).pipe(
     Effect.flatMap((raw) =>

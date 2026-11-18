@@ -1,5 +1,3 @@
-// Codex's side of the session view and start: its app-server events as items and text, and
-// the agent settings a Codex start sends.
 import { Option, Schema } from "effect";
 import type { AgentConfig } from "../../../protocol/supervisor.js";
 import type { AgentSettings } from "./agent-settings.js";
@@ -22,7 +20,7 @@ import {
   upsert,
 } from "../items.js";
 
-const status = (value: unknown): ToolStatus =>
+const status: (value: unknown) => ToolStatus = (value) =>
   value === "failed"
     ? "failed"
     : value === "declined"
@@ -61,8 +59,7 @@ function commandSummary(item: Json) {
   return commandTool(command);
 }
 
-// One Codex app-server ThreadItem as an item, or nothing for kinds the UI doesn't draw.
-function codexItem(value: unknown): Item | undefined {
+const codexItem: (value: unknown) => Item | undefined = function codexItem(value) {
   const item = record(value);
   if (item === undefined) return undefined;
   const id = string(item["id"]);
@@ -88,9 +85,9 @@ function codexItem(value: unknown): Item | undefined {
         durationMs: number(item["durationMs"]),
       });
     case "fileChange": {
-      const changes = array(item["changes"]).flatMap((entry): Change[] => {
+      const changes = array(item["changes"]).flatMap((entry) => {
         const change = record(entry);
-        if (change === undefined) return [];
+        if (change === undefined) return [] satisfies Change[];
         const kind = record(change["kind"])?.["type"] ?? change["kind"];
         return [
           {
@@ -98,7 +95,7 @@ function codexItem(value: unknown): Item | undefined {
             kind: kind === "add" ? "add" : kind === "delete" ? "delete" : "update",
             diff: string(change["diff"]),
           },
-        ];
+        ] satisfies Change[];
       });
       const verb = changes.every((change) => change.kind === "add")
         ? "Create"
@@ -160,10 +157,9 @@ function codexItem(value: unknown): Item | undefined {
     default:
       return undefined;
   }
-}
+};
 
-// Folds one Codex notification into a turn's items. Deltas grow the item a later completion replaces.
-export function step(turn: TurnItems, event: unknown): TurnItems {
+export const step: (turn: TurnItems, event: unknown) => TurnItems = function step(turn, event) {
   const fields = record(event);
   const params = record(fields?.["params"]);
   if (fields === undefined || params === undefined) return turn;
@@ -176,7 +172,6 @@ export function step(turn: TurnItems, event: unknown): TurnItems {
     case "item/completed": {
       const item = codexItem(params["item"]);
       if (item === undefined) return turn;
-      // A started item carries no streamed text yet; keep what deltas already gave it.
       const kept = turn.items.find((entry) => entry.id === item.id);
       if (method === "item/started" && kept !== undefined) return turn;
       return { ...turn, items: upsert(turn.items, item) };
@@ -240,9 +235,8 @@ export function step(turn: TurnItems, event: unknown): TurnItems {
     default:
       return turn;
   }
-}
+};
 
-// Streamed and final agent text. A delta or item that is a bare string is still streaming.
 const Piece = Schema.Union([Schema.String, Schema.Struct({ text: Schema.String })]);
 const TextEvent = Schema.Union([
   Schema.Struct({
@@ -256,23 +250,24 @@ const TextEvent = Schema.Union([
 ]);
 const decodeTextEvent = Schema.decodeUnknownOption(TextEvent);
 
-export function text(event: unknown): { text: string; complete: boolean } | undefined {
-  const decoded = decodeTextEvent(event);
-  if (Option.isNone(decoded)) return undefined;
-  const known = decoded.value;
-  const piece = known.method === "item/completed" ? known.params.item : known.params.delta;
-  return typeof piece === "string"
-    ? { text: piece, complete: false }
-    : { text: piece.text, complete: known.method === "item/completed" };
-}
+export const text: (event: unknown) => { text: string; complete: boolean } | undefined =
+  function text(event) {
+    const decoded = decodeTextEvent(event);
+    if (Option.isNone(decoded)) return undefined;
+    const known = decoded.value;
+    const piece = known.method === "item/completed" ? known.params.item : known.params.delta;
+    return typeof piece === "string"
+      ? { text: piece, complete: false }
+      : { text: piece.text, complete: known.method === "item/completed" };
+  };
 
-export const startConfig = (
+export const startConfig: (
   chatgpt: {
     readonly token: string;
     readonly accountId: string;
   },
   settings: typeof AgentSettings.Type,
-): Extract<typeof AgentConfig.Type, { kind: "codex" }> => ({
+) => Extract<typeof AgentConfig.Type, { kind: "codex" }> = (chatgpt, settings) => ({
   kind: "codex",
   model: settings.model,
   effort: settings.effort,

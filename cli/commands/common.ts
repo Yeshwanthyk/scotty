@@ -1,10 +1,9 @@
 import { BunServices } from "@effect/platform-bun";
 import { Effect, Schema, Stdio, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { List, type Session, Url, access, client, failure, target } from "../client.js";
 import { readConfig } from "../config.js";
 
-// JSON when piped or asked for; readable text in a terminal.
 export const json = process.argv.includes("--json") || !process.stdout.isTTY;
 const colour = !json && process.env.NO_COLOR === undefined;
 const paint = (code: number) => (text: string) =>
@@ -20,7 +19,6 @@ export const output = (value: unknown, text?: string) =>
     console.log(json || text === undefined ? JSON.stringify(value) : text);
   });
 
-// SCOTTY_URL wins, so a broken config file doesn't block it.
 export const address = Effect.gen(function* () {
   const env = process.env.SCOTTY_URL;
   if (env === undefined || env === "") {
@@ -44,7 +42,6 @@ export const usage = (message: string, command: string) =>
 
 const idPattern = /^[a-z0-9-]{4,32}$/;
 
-// Full ids, or prefixes of listed sessions (4+ characters); the list is fetched once.
 export const sessionIds = (api: Api, ids: readonly string[], command: string) =>
   Effect.gen(function* () {
     if (!ids.every((id) => idPattern.test(id)))
@@ -70,7 +67,6 @@ export const sessionPath = (api: Api, id: string, command: string) =>
 
 const minutes = (iso: string) => Math.max(1, Math.ceil((Date.parse(iso) - Date.now()) / 60_000));
 
-// An idle running session is warm until it sleeps; a stop says why.
 export const state = (session: typeof Session.Type) => {
   const { authority, progress } = session;
   if (authority.kind === "transitioning") return "starting";

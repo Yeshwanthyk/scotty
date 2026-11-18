@@ -1,5 +1,5 @@
 import { Effect, Option, Schema } from "effect";
-import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/cli";
 import { ConnectionCreated, ConnectionRemoved, Connections, Deliveries } from "../client.js";
 import {
   type Api,
@@ -24,7 +24,6 @@ import {
 } from "../../src/creds/connections.js";
 import { SignaturePreset } from "../../src/hooks/config.js";
 
-// Pasted credentials arrive on stdin, never in argv or command output.
 export const connect = Command.make(
   "connect",
   {

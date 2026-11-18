@@ -1,6 +1,6 @@
 import { BunSocket } from "@effect/platform-bun";
 import { Effect } from "effect";
-import { WebSocketConstructor, type WebSocketLike } from "effect/unstable/socket/Socket";
+import { WebSocketConstructor, type WebSocketLike } from "effect/socket/Socket";
 import { access, CliFailure, client, Created, failure, target, View } from "../cli/client.js";
 import { agent, prompt, sessionAgent } from "./lib/agent.js";
 import { fixtureRepo } from "../protocol/supervisor.js";
@@ -9,7 +9,6 @@ import { Log, waiter } from "./lib/wait.js";
 const check = (ok: boolean, message: string) =>
   ok ? Effect.void : Effect.fail(failure("terminal", message, "scotty doctor"));
 
-// One terminal socket: everything the shell prints, and a wait for a marker or the close.
 const shell = (socket: WebSocketLike) => {
   const decoder = new TextDecoder();
   let output = "";
@@ -65,7 +64,6 @@ const program = Effect.gen(function* () {
   );
   const before = (yield* request(`${prefix}/log`, Log)).length;
 
-  // 1. A login shell in the repository, sized by the dial and then by a resize.
   const endpoint = new URL(`${prefix}/terminal?cols=80&rows=24`, url);
   endpoint.protocol = "wss:";
   const connect = yield* WebSocketConstructor;
@@ -89,7 +87,6 @@ const program = Effect.gen(function* () {
   const after = (yield* request(`${prefix}/log`, Log)).length;
   yield* check(after === before, `The terminal appended ${after - before} events`);
 
-  // 2. Another site can't open it; a stopped session refuses it.
   const dial = (headers: Record<string, string>) =>
     Effect.tryPromise({
       try: () =>

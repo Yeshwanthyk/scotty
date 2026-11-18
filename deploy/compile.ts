@@ -1,6 +1,3 @@
-// Builds the scotty binary for each platform, with the release and SKILL.md inside it
-// (cli/binary.ts). Run `npm run compile` after `npm run ui:build`; the binaries land in dist/bin.
-// The macOS ones are signed only when this runs on macOS.
 import { execFileSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
@@ -27,8 +24,6 @@ for (const platform of platforms) {
     ["build", "--compile", `--target=bun-${platform}`, "cli/binary.ts", "--outfile", out],
     { cwd: root, stdio: "inherit" },
   );
-  // A binary built for the other Mac architecture carries a broken signature; macOS on Apple
-  // silicon runs nothing unsigned.
   if (platform.startsWith("darwin-") && process.platform === "darwin")
     execFileSync("codesign", ["--force", "--sign", "-", out], { cwd: root, stdio: "inherit" });
 }

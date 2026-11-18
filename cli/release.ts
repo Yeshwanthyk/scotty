@@ -1,11 +1,8 @@
-// The release a deploy uploads. The compiled CLI carries one, packed by deploy/compile.ts and
-// handed over by cli/binary.ts; run from a checkout, the CLI builds one there.
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Effect, Schema } from "effect";
 
-// release.pack: each file of the release, and SKILL.md, by path, base64.
 export const Pack = Schema.Record(Schema.String, Schema.String);
 
 let packed: string | undefined;
@@ -14,7 +11,6 @@ export const useRelease = (path: string) => {
 };
 export const embedded = () => packed !== undefined;
 
-// The embedded release is missing or could not be read or written.
 class ReleaseFailure extends Schema.TaggedError<ReleaseFailure>()("ReleaseFailure", {}) {}
 const io = <A>(run: () => Promise<A>) =>
   Effect.tryPromise({ try: run, catch: () => new ReleaseFailure() });
@@ -24,7 +20,6 @@ const readPack = (path: string) =>
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Pack))),
   );
 
-// A file of the embedded pack, or undefined when the CLI runs from a checkout.
 export const packedFile = (name: string) =>
   Effect.gen(function* () {
     if (packed === undefined) return undefined;
@@ -32,13 +27,11 @@ export const packedFile = (name: string) =>
     return content === undefined ? undefined : Buffer.from(content, "base64").toString("utf8");
   });
 
-// Writes the embedded release to a temporary folder, removed when the scope closes.
 export const unpackRelease = Effect.gen(function* () {
   if (packed === undefined) return yield* new ReleaseFailure();
   const pack = yield* readPack(packed);
   const dir = yield* Effect.acquireRelease(
     io(() => mkdtemp(join(tmpdir(), "scotty-release-"))),
-    // A finalizer can't fail; a folder left in tmpdir is harmless.
     (dir) => Effect.ignore(io(() => rm(dir, { recursive: true, force: true }))),
   );
   yield* io(async () => {

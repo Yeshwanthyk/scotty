@@ -3,9 +3,9 @@ import type { FromSupervisorMessage } from "../../protocol/supervisor.js";
 import type { Draft } from "./log.js";
 
 /** Translate the agent-neutral supervisor envelope; only view.ts reads agent payloads. */
-export const supervisorEvent = (
+export const supervisorEvent: (
   message: FromSupervisorMessage,
-): Effect.Effect<Draft | undefined, Schema.SchemaError> =>
+) => Effect.Effect<Draft | undefined, Schema.SchemaError> = (message) =>
   Effect.gen(function* () {
     switch (message.type) {
       case "hello":

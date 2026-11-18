@@ -1,6 +1,6 @@
 import { BunServices } from "@effect/platform-bun";
 import { Effect, FileSystem, Option, Schema } from "effect";
-import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/cli";
 import { Automations, AutomationSwitched, ConnectionCreated, Connections } from "../client.js";
 import { address, bold, dim, green, output, readStdin, usage, withClient } from "./common.js";
 import { repoName } from "./sessions.js";
@@ -24,8 +24,6 @@ const readBlueprint = (path: string) =>
     ),
   );
 
-// Pasted secrets arrive on stdin as one JSON object of connection name to secret, never in argv
-// or output. Everything is created off; the owner pastes the hook URLs and secrets, then enables.
 const install = Command.make(
   "install",
   {
@@ -40,7 +38,6 @@ const install = Command.make(
       const repo = Option.isSome(repository)
         ? yield* repoName(repository.value, "blueprint")
         : undefined;
-      // Each --target is <name>=<owner/repo>; a name may hold "=", a repo can't.
       const targets = yield* Schema.decodeUnknownEffect(Targets)(
         target.map((text) => {
           const at = text.lastIndexOf("=");

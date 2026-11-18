@@ -1,7 +1,7 @@
 import { Effect, Option, Schema, Stream } from "effect";
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import type * as Cloudflare from "alchemy/Cloudflare";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import type * as Cloudflare from "@alchemy.run/cloudflare";
 import { connectionName, type DeliveryReason, Key } from "../creds/connections.js";
 import type CredsObject from "../creds/object.js";
 import { AgentKind } from "../session/events.js";
@@ -22,12 +22,10 @@ const Payload = Schema.Struct({
   size: Schema.optional(Size),
   place: Schema.optional(PlaceKind),
   title: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200))),
-  // The agent's scripted stand-in, for e2e, as on the API.
   scripted: Schema.optional(Schema.Literal(true)),
 });
 const decodePayload = Schema.decodeUnknownEffect(Payload);
 
-// A sender sees only the status and a code; the details are in `scotty deliveries`.
 const refuse = (status: number, code: string) =>
   HttpServerResponse.json({ error: { code, message: code.replaceAll("_", " ") } }, { status });
 const refusalStatus = {
@@ -39,8 +37,6 @@ const refusalStatus = {
   too_large: 413,
 };
 
-// POST /hooks/:name. Only a verified delivery reaches a session; every one that names a
-// connection is recorded, accepted or not.
 export function hookHandler(
   request: HttpServerRequest.HttpServerRequest,
   name: string,
@@ -56,7 +52,6 @@ export function hookHandler(
       credential
         .recordDelivery({ id: delivery, connection: name, outcome: "rejected", reason })
         .pipe(Effect.andThen(refuse(status, reason)));
-    // Reads until the cap is passed and stops there; Content-Length is the sender's claim only.
     const chunks: Uint8Array[] = [];
     let size = 0;
     yield* request.stream.pipe(
@@ -76,7 +71,6 @@ export function hookHandler(
     }
     const verified = yield* credential.verifyDelivery({
       connection: name,
-      // Effect's Headers carry a symbol key, which Workers RPC can't serialize.
       headers: Object.fromEntries(Object.entries(request.headers)),
       body: bytes,
     });
@@ -92,7 +86,6 @@ export function hookHandler(
     }
     if (verified.verdict !== "ok")
       return yield* reject(refusalStatus[verified.verdict], verified.verdict);
-    // A connection that automations listen on hands its deliveries to them.
     const automated = yield* automationDelivery(sessions, credential, name, verified);
     if (automated !== undefined) return automated;
     const payload = yield* decodePayload(verified.payload).pipe(Effect.option);
@@ -107,7 +100,6 @@ export function hookHandler(
       ...(payload.value.place === undefined ? {} : { place: payload.value.place }),
       ...(scripted === true ? { scripted } : {}),
       ...(key === undefined ? {} : { key }),
-      // A retried delivery is answered with what the first one did.
       retry: `hook:${name}:${delivery}`,
       origin: {
         kind: "hook",
@@ -119,7 +111,6 @@ export function hookHandler(
     if (started.kind === "refused")
       return yield* reject(started.code === "repository_not_found" ? 422 : 502, started.code);
     if (started.kind === "conflict") return yield* reject(409, "key_conflict");
-    // A session that took no prompt (failed, or its turn moved on): the sender should know.
     if (started.kind === "unavailable") return yield* reject(409, "session_unavailable");
     const duplicate = started.kind === "duplicate";
     yield* credential.recordDelivery({

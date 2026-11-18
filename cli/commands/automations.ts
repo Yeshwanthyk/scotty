@@ -1,5 +1,5 @@
 import { Effect, Option } from "effect";
-import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/cli";
 import { AutomationRemoved, Automations, AutomationSwitched, RunFired, Runs } from "../client.js";
 import { ago, bold, dim, green, output, short, table, usage, withClient } from "./common.js";
 import { repoName } from "./sessions.js";
@@ -15,7 +15,6 @@ const checkName = (name: string, command: string) =>
         command,
       );
 
-// One line a person reads: when it fires, what must match, and what it starts.
 const sentence = (automation: Automation) => {
   const when =
     automation.when.kind === "calendar"

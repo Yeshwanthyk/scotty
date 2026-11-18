@@ -54,7 +54,7 @@ ui/                   the web app (kept; its old API schemas are in ui/src/proto
 e2e/                  tests against a real deployment
 ```
 
-Everything is TypeScript on Effect `4.0.0-rc.117` and Alchemy `2.0.0-beta.79`, pinned under `vendor/` as read-only reference source. The CLI and supervisor are compiled to single binaries with `bun build --compile`.
+Everything is TypeScript on Effect `4.1.4` and Alchemy `2.0.0-beta.87`, pinned under `vendor/` as read-only reference source. The CLI and supervisor are compiled to single binaries with `bun build --compile`.
 
 ## Session: one writer, one log
 

@@ -1,5 +1,3 @@
-// Builds a release from this checkout: the Worker bundle, the web app's files and a manifest
-// naming the pinned image. The deployer uploads a release as it is; it builds nothing.
 import { cp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,7 +17,6 @@ export const buildRelease = async (dir: string) => {
   ]) {
     const bundle = await rolldown({
       input: join(root, entry.input),
-      // Native modules that dev tooling references behind runtime guards.
       external: ["lightningcss", "fsevents"],
       cwd: root,
       plugins: [cloudflareRolldown({ compatibilityDate, compatibilityFlags: [] })],
@@ -39,7 +36,6 @@ export const buildRelease = async (dir: string) => {
       await bundle.close();
     }
   }
-  // ui/dist/server is the prerender's own build, not something the browser loads.
   const ui = join(root, "ui/dist");
   await cp(ui, join(dir, "assets"), {
     recursive: true,

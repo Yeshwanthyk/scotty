@@ -4,8 +4,6 @@ import { access, CliFailure, failure, target } from "../cli/client.js";
 import { prompt, sessionAgent } from "./lib/agent.js";
 import { fixtureRepo } from "../protocol/supervisor.js";
 
-// Scotty's own MCP server, driven by the official MCP client the way claude.ai or Claude Code
-// would, but with a cloudflared Access token in place of the OAuth sign-in.
 const Created = Schema.fromJsonString(Schema.Struct({ id: Schema.String }));
 const Read = Schema.fromJsonString(
   Schema.Struct({
@@ -39,11 +37,9 @@ const program = Effect.gen(function* () {
   const url = yield* target(process.env.SCOTTY_URL);
   const endpoint = new URL("/mcp", url);
 
-  // 1. Without a token, Access answers for Managed OAuth: a 401 that points a client at sign-in.
   const bare = yield* attempt("unauthenticated POST", () =>
     fetch(endpoint, {
       method: "POST",
-      // The Accept an MCP client sends; with JSON alone, Access answers as it does a browser.
       headers: {
         "content-type": "application/json",
         accept: "application/json, text/event-stream",
@@ -57,7 +53,6 @@ const program = Effect.gen(function* () {
     `An unauthenticated client got ${bare.status}, not a 401 with WWW-Authenticate`,
   );
 
-  // 2. Signed in, the client initializes and sees every tool.
   const token = yield* access(endpoint.href);
   const mcp = new Client({ name: "scotty-e2e", version: "1.0.0" });
   yield* attempt("connect", () =>
@@ -106,9 +101,6 @@ const program = Effect.gen(function* () {
       return yield* fail("Timed out waiting on read_session");
     });
 
-  // 3. A new session answers its prompt, and read_session shows the answer once it stops working.
-  // Repeated with its key and arguments, new_session returns that session and makes no other;
-  // the key with another prompt is a conflict, and an unknown place is refused.
   const first = `MCP-${crypto.randomUUID().slice(0, 8)}`;
   const key = `mcp-e2e-${crypto.randomUUID()}`;
   const args = {
@@ -146,7 +138,6 @@ const program = Effect.gen(function* () {
     ),
   );
 
-  // 4. steer_session finds the current turn itself.
   const second = `MCP-${crypto.randomUUID().slice(0, 8)}`;
   yield* call("steer_session", {
     id,
@@ -166,7 +157,6 @@ const program = Effect.gen(function* () {
     ),
   );
 
-  // 5. The list has the session; an unknown id is a tool error, not a protocol one.
   const sessions = yield* decode(Listed, yield* call("list_sessions", {}));
   yield* check(
     sessions.some((session) => session.id === id),
@@ -175,7 +165,6 @@ const program = Effect.gen(function* () {
   const missing = yield* reply("read_session", { id: "missing0" });
   yield* check(missing.isError === true, "read_session of an unknown id did not report an error");
 
-  // 6. stop_session stops it.
   yield* call("stop_session", { id });
   yield* until(id, (value) => value.status === "stopped");
   yield* attempt("close", () => mcp.close());

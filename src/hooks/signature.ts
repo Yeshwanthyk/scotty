@@ -27,7 +27,7 @@ export function readDelivery(
       id: Option.getOrElse(Schema.decodeUnknownOption(Text)(id), () => ""),
     } as const;
   }
-  const source = (location: typeof config.delivery): unknown =>
+  const source: (location: typeof config.delivery) => unknown = (location) =>
     location.kind === "header"
       ? headers[location.name.toLowerCase()]
       : field(payload.value, location.path);
@@ -49,7 +49,7 @@ export function readDelivery(
 }
 
 const encoder = new TextEncoder();
-const bytesOf = (base64: string): Uint8Array<ArrayBuffer> | undefined => {
+const bytesOf: (base64: string) => Uint8Array<ArrayBuffer> | undefined = (base64) => {
   try {
     return Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
   } catch {
@@ -62,7 +62,7 @@ export const newSecret = (prefix: string) => {
   return `${prefix}${btoa(String.fromCharCode(...bytes))}`;
 };
 
-export async function verifySignature(
+export const verifySignature: (
   config: InboundConfig,
   input: {
     secret: string;
@@ -70,7 +70,10 @@ export async function verifySignature(
     body: Uint8Array<ArrayBuffer>;
     now: number;
   },
-): Promise<"ok" | "bad_signature" | "stale_timestamp"> {
+) => Promise<"ok" | "bad_signature" | "stale_timestamp"> = async function verifySignature(
+  config,
+  input,
+) {
   const { id, timestamp, signature } = input.values;
   if (config.timestamp !== null && (timestamp === null || !/^\d{1,16}$/.test(timestamp)))
     return "bad_signature";
@@ -79,7 +82,6 @@ export async function verifySignature(
   const key = await crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, [
     "verify",
   ]);
-  // Insert raw bytes, without decoding/re-encoding the body or interpreting values as templates.
   const parts = config.signed
     .split(/(\{id\}|\{timestamp\}|\{body\})/)
     .map((part) =>
@@ -93,7 +95,6 @@ export async function verifySignature(
     signed.set(part, offset);
     offset += part.length;
   }
-  // Space-separated candidates also cover Standard Webhooks' secret rotation.
   for (const entry of signature.split(" ")) {
     if (!entry.startsWith(config.prefix)) continue;
     const value = entry.slice(config.prefix.length);
@@ -105,7 +106,6 @@ export async function verifySignature(
               Number.parseInt(value.slice(index * 2, index * 2 + 2), 16),
             )
           : undefined;
-    // Web Crypto compares HMACs in constant time.
     if (candidate === undefined || !(await crypto.subtle.verify("HMAC", key, candidate, signed)))
       continue;
     if (config.timestamp !== null && config.timestamp.toleranceSeconds !== undefined) {
@@ -116,4 +116,4 @@ export async function verifySignature(
     return "ok";
   }
   return "bad_signature";
-}
+};

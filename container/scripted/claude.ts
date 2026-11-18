@@ -1,8 +1,3 @@
-// A stand-in for the `claude` executable the Agent SDK spawns, which e2e sessions run instead of
-// Claude Code, so they need no Claude account and don't depend on what a model says. It speaks
-// stream-json on stdio as Claude Code does for the SDK's query(): control requests and SDK
-// messages, typed by the pinned SDK so typecheck holds them to its protocol. Each prompt is read
-// as a script (script.ts).
 import type { ChildProcess } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -45,21 +40,18 @@ const UserMessage = Schema.Struct({
   }),
 });
 const Input = Schema.Union([ControlRequest, UserMessage]);
-// Typecheck fails unless everything the pinned SDK writes to Claude Code's stdin decodes.
 type Covers<Sent, Read> = [Sent] extends [Read] ? true : never;
 const covers: [
   Covers<SDKControlRequest, typeof ControlRequest.Encoded>,
   Covers<SDKUserMessage, typeof UserMessage.Encoded>,
 ] = [true, true];
 void covers;
-// The requests the stand-in answers; the runner sends no others.
 type Subtype = SDKControlRequest["request"]["subtype"];
 const initialize: Subtype = "initialize";
 const interrupt: Subtype = "interrupt";
 
 type Turn = {
   readonly lines: string[];
-  // The user messages this turn answers, as the result reports them.
   readonly answers: string[];
   readonly startedAt: number;
   interrupted: boolean;
@@ -72,7 +64,6 @@ const flag = (name: string) =>
 const resumed = flag("resume");
 const session = resumed ?? flag("session-id") ?? crypto.randomUUID();
 const cwd = process.cwd();
-// Claude Code keeps a session in a project folder named after its cwd; the supervisor saves it.
 const project = `${process.env.HOME ?? "/home/scotty"}/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
 const transcript = `${project}/${session}.jsonl`;
 if (resumed !== undefined && !existsSync(transcript)) {
@@ -98,7 +89,6 @@ const Entry = Schema.fromJsonString(
     message: Schema.Struct({ content: Schema.String }),
   }),
 );
-// What the session remembers survives a stop only through the restored transcript.
 const recall = () =>
   readFileSync(transcript, "utf8")
     .split("\n")
@@ -109,7 +99,6 @@ const recall = () =>
       Option.getOrElse(() => ""),
     ) ?? "";
 
-// A scripted reply uses no model, so every count is zero.
 const usage: NonNullableUsage = {
   input_tokens: 0,
   output_tokens: 0,
@@ -151,7 +140,6 @@ const assistant = (content: SDKAssistantMessage["message"]["content"]) => {
 };
 
 const say = (text: string) => {
-  // Real replies stream in pieces before the message they become.
   for (let at = 0; at < text.length; at += 4)
     write({
       type: "stream_event",
@@ -203,7 +191,7 @@ const run = async (turn: Turn, next: Extract<Step, { kind: "run" | "call" }>) =>
   record({ type: "user", uuid: message.uuid, message: message.message });
 };
 
-const result = (turn: Turn): SDKResultMessage => {
+const result: (turn: Turn) => SDKResultMessage = (turn) => {
   const common = {
     type: "result" as const,
     duration_ms: Date.now() - turn.startedAt,
@@ -286,8 +274,6 @@ const handle = (message: typeof Input.Type) => {
         request_id,
         error: `The scripted stand-in does not handle ${request.subtype}`,
       });
-    // An interrupt stops the running command; the turn then ends as interrupted. Nothing is
-    // ever queued, as a steer joins the running turn at once.
     if (active !== undefined) {
       active.interrupted = true;
       active.child?.kill();
@@ -302,7 +288,6 @@ const handle = (message: typeof Input.Type) => {
   const text = prompt(message);
   const uuid = message.uuid ?? crypto.randomUUID();
   record({ type: "user", uuid, message: { role: "user", content: text } });
-  // With a turn running, a message is a steer: its lines join that turn.
   if (active !== undefined) {
     active.lines.push(...lines(text));
     active.answers.push(uuid);

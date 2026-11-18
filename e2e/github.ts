@@ -1,6 +1,6 @@
 import { BunServices } from "@effect/platform-bun";
 import { Effect, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   access,
   CliFailure,
@@ -18,10 +18,8 @@ import { githubEvents } from "./github-events.js";
 
 const check = (ok: boolean, message: string) =>
   ok ? Effect.void : Effect.fail(failure("github", message, "scotty doctor"));
-// Patterns chosen so the command text itself, echoed in a reply or a rollout, never matches.
 const tokenPattern = "gh[opsu]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}";
 
-// gh runs on the host with the owner's login; the session never sees that token.
 const gh = (args: string[]) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -71,7 +69,6 @@ const program = Effect.gen(function* () {
       () => request(`${prefix}/log`, Log),
       (log) => log.some((e) => e.kind === "turn.ended" && e.turn === turn),
     );
-  // Runs a command and returns its output: in words for a real agent, as a script for the stand-in.
   const run = (turn: string, command: string, ask = "reply with its full output") =>
     answer(turn, prompt(`Run exactly: \`${command}\` and ${ask}.`, `run ${command}\nsay {{out}}`));
   const answer = (turn: string, text: string) =>
@@ -87,7 +84,6 @@ const program = Effect.gen(function* () {
       return conversation.turns.find((item) => item.id === req)?.assistant ?? "";
     });
 
-  // 1. The agent pushes its commit to scotty/<id> of a private repository.
   yield* ended("0");
   const pushed = yield* gh([`repos/${repo}/branches/${branch}`, "--jq", ".commit.sha"]);
   yield* check(pushed.ok && /^[0-9a-f]{40}$/.test(pushed.out.trim()), `No branch ${branch}`);
@@ -99,7 +95,6 @@ const program = Effect.gen(function* () {
   yield* check(content.ok && content.out.includes(marker), "Pushed marker.txt lacks the marker");
   console.log(`Pushed: ${branch} at ${pushed.out.trim()} holds the marker`);
 
-  // 2. A push outside scotty/* is refused.
   const refused = yield* run("1", "git push origin HEAD:refs/heads/scotty-e2e-forbidden 2>&1");
   const forbidden = yield* gh([`repos/${repo}/branches/scotty-e2e-forbidden`]);
   yield* check(!forbidden.ok, "The forbidden branch exists");
@@ -109,8 +104,6 @@ const program = Effect.gen(function* () {
   );
   console.log("Refused: push to scotty-e2e-forbidden failed and no branch exists");
 
-  // 3. gh opens and merges a pull request between two scotty/* branches; GitHub's token is
-  // swapped in by the Worker.
   const base = `${branch}-base`;
   const merged = yield* run(
     "2",
@@ -127,7 +120,6 @@ const program = Effect.gen(function* () {
   );
   console.log(`Merged: gh opened and merged ${branch} into ${base}`);
 
-  // 4. gh writes that move a branch outside scotty/* are refused before they reach GitHub.
   const writes = [
     `gh api -X PUT repos/${repo}/contents/e2e-forbidden.txt -f message=x -f content=eA== -f branch=main`,
     `gh api -X POST repos/${repo}/git/refs -f ref=refs/heads/scotty-e2e-forbidden-api -f sha=$(git rev-parse HEAD)`,
@@ -147,9 +139,6 @@ const program = Effect.gen(function* () {
   yield* check(!file.ok && !apiBranch.ok, "A refused write reached GitHub");
   console.log("Refused: contents PUT on main, a non-scotty ref and a GraphQL updateRef");
 
-  // 5. No GitHub token anywhere the agent can look. Codex refuses to print env or config
-  // verbatim, so the command reports only match counts. /usr and /opt are image content, and the
-  // Codex and gh binaries there hold their own token patterns.
   const scan = yield* run(
     "4",
     `p='${tokenPattern}'; echo REWRITE=$(git config --global --get-regexp '^url\\..*github\\.internal' | wc -l); echo ENV=$(env | grep -cE "$p"); echo CONFIG=$(git config --list | grep -cE "$p"); echo ARGS=$(cat /proc/[0-9]*/cmdline 2>/dev/null | tr '\\0' '\\n' | grep -cE "$p"); echo FILES=$(grep -rlE "$p" / --exclude-dir=proc --exclude-dir=sys --exclude-dir=usr --exclude-dir=opt 2>/dev/null | wc -l)`,
@@ -161,7 +150,6 @@ const program = Effect.gen(function* () {
   yield* check(!new RegExp(tokenPattern).test(scan), "The reply holds a GitHub token");
   console.log("Clean: no GitHub token in env, git config or files");
 
-  // 6. Clean up the branches and the session.
   for (const name of [branch, base]) {
     const deleted = yield* gh(["-X", "DELETE", `repos/${repo}/git/refs/heads/${name}`]);
     yield* check(deleted.ok, `Could not delete ${name}`);

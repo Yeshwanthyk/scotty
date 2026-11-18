@@ -1,4 +1,3 @@
-// The first line of the prompt, cut at a word near 60 characters.
 export const titleFrom = (prompt: string) => {
   const line = prompt.trim().split("\n")[0] ?? "";
   if (line.length <= 60) return line;

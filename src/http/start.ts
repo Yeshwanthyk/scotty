@@ -1,6 +1,6 @@
 import type { PromptImage } from "../../protocol/prompt.js";
 import { Effect, Schema } from "effect";
-import type * as Cloudflare from "alchemy/Cloudflare";
+import type * as Cloudflare from "@alchemy.run/cloudflare";
 import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import { fixtureRepo } from "../../protocol/supervisor.js";
@@ -9,7 +9,6 @@ import { defaultPlace, type PlaceKind, type Size } from "../places/place.js";
 
 export const githubHint = "scotty login github";
 export const Repo = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/));
-// What a repository's settings are stored under: GitHub names ignore case.
 export const repoKey = (repo: string) => repo.toLowerCase();
 export const Prompt = Schema.String.check(
   Schema.makeFilter((text) => text.trim() !== "", { expected: "a prompt that is not blank" }),
@@ -25,24 +24,17 @@ export type StartInput = {
   images?: readonly PromptImage[];
   title: string;
   agent: typeof AgentKind.Type;
-  // Where the container runs; absent, the default place.
   place?: typeof PlaceKind.Type;
-  // Absent: the repository's default, else the default size.
   size?: typeof Size.Type;
   scripted?: true;
   idleAfter?: number;
-  // An automation run reserves its target before dispatch, so retries keep that session.
   id?: string;
   branch?: string;
-  // With a key, a second start steers the session the first one made.
   key?: string;
-  // The request id: a retry with it is answered with what the first attempt did.
   retry: string;
   origin?: Origin;
 };
 
-// A start makes a session, prompts the one its key names, answers a retry with what the first
-// attempt did, or says why not. The Session DO decides which; every caller with one id agrees.
 export function startSession(
   sessions: Cloudflare.DurableObject<SessionObject>,
   credential: ReturnType<Cloudflare.DurableObject<CredsObject>["getByName"]>,
@@ -55,19 +47,14 @@ export function startSession(
       images: input.images ?? [],
       repo: input.repo,
       agentKind: input.agent,
-      // Named only when the caller named them: a retried create is compared with what it named.
       ...(input.size === undefined ? {} : { size: input.size }),
       ...(input.place === undefined ? {} : { place: input.place }),
     };
-    // Automations already resolved their target; a made session needs no repository lookup.
     const keyed = input.id ?? (yield* credential.resolveSession(input.retry, input.key ?? null));
     if (keyed !== null) {
       const answer = yield* sessions.getByName(keyed).start(request);
       if (answer.kind !== "uncreated") return { ...answer, id: keyed };
     }
-    // The repository default is read only when the request names no size, and goes in as
-    // `repoSize`: a retried create is compared with the size it named, never with a default
-    // that changed since. It is read alongside the branch lookup; neither needs the other.
     const findBranch = Effect.gen(function* () {
       if (input.branch !== undefined) return { ok: true as const, branch: input.branch };
       if (input.repo === fixtureRepo) return { ok: true as const, branch: "main" };
@@ -129,7 +116,6 @@ export function startSession(
         ...(input.origin === undefined ? {} : { origin: input.origin }),
       },
     });
-    // With `create` given, the session is never left unmade.
     return answer.kind === "uncreated"
       ? yield* Effect.die("Session was not created")
       : { ...answer, id };

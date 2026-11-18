@@ -1,12 +1,11 @@
 import { Cause, Deferred, Effect, Exit, Option, Queue, Result, Schema, Stream } from "effect";
 import type { PlatformError } from "effect";
-import type { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChildProcessSpawner } from "effect/process";
 import { AgentError, type AgentOutput } from "../../runner.js";
 import { serverReply } from "./server-requests.js";
 import { decodeRpcLine, RpcFailure } from "./rpc-schema.js";
 
 type Outgoing = { line: string; written: Deferred.Deferred<void, AgentError> };
-// Codex's stderr tail goes into the event log; bearer tokens and JWTs never do.
 const redact = (line: string) =>
   line
     .replaceAll(String.fromCharCode(27), "")
@@ -14,9 +13,6 @@ const redact = (line: string) =>
     .replace(/eyJ[\w-]+\.[\w-]+\.[\w-]*/g, "[redacted]")
     .replace(/bearer\s+\S+/gi, "Bearer [redacted]")
     .slice(0, 300);
-// exitCode fails only when a signal kills the process. Effect names the signal only in the
-// message of that error's cause (NodeChildProcessSpawner: "receipt of signal: 'SIGKILL'"), and
-// SIGKILL is how an out-of-memory kill shows, so it is read from there.
 const endedBy = (cause: Cause.Cause<PlatformError.PlatformError | Cause.TimeoutError>) => {
   const error = Cause.findErrorOption(cause);
   if (Option.isNone(error) || error.value._tag !== "PlatformError") return "status unknown";
@@ -80,7 +76,6 @@ export class CodexRpc {
       Stream.decodeText(),
       Stream.splitLines,
       Stream.runForEach((line) => this.receive(line)),
-      // A clean end of stdout also means Codex is gone.
       Effect.exit,
       Effect.andThen(
         this.exited("Codex stdout closed", this.child.exitCode.pipe(Effect.timeout("5 seconds"))),
@@ -90,11 +85,10 @@ export class CodexRpc {
     yield* this.exited("Codex exited", this.child.exitCode).pipe(Effect.forkScoped);
   });
 
-  // The error says how Codex ended and what it last said.
   private exited(
     what: string,
     status: Effect.Effect<number, PlatformError.PlatformError | Cause.TimeoutError>,
-  ): Effect.Effect<void> {
+  ) {
     return status.pipe(
       Effect.exit,
       Effect.flatMap((exit) => {
@@ -107,10 +101,10 @@ export class CodexRpc {
           }),
         );
       }),
-    );
+    ) satisfies Effect.Effect<void>;
   }
 
-  private failAll(error: AgentError): Effect.Effect<void> {
+  private failAll(error: AgentError) {
     return Effect.gen({ self: this }, function* () {
       if (this.failed) return;
       this.failed = true;
@@ -122,10 +116,10 @@ export class CodexRpc {
         code: error.code,
         message: error.message,
       });
-    });
+    }) satisfies Effect.Effect<void>;
   }
 
-  private receive(line: string): Effect.Effect<void, AgentError> {
+  private receive(line: string) {
     return Effect.gen({ self: this }, function* () {
       const decoded = yield* decodeRpcLine(line).pipe(Effect.option);
       if (Option.isNone(decoded)) {
@@ -168,10 +162,10 @@ export class CodexRpc {
           );
         } else yield* Deferred.succeed(deferred, message.result);
       }
-    });
+    }) satisfies Effect.Effect<void, AgentError>;
   }
 
-  private write(line: string): Effect.Effect<void, AgentError> {
+  private write(line: string) {
     return Effect.gen({ self: this }, function* () {
       if (this.failed) return yield* new AgentError({ code: "exit", message: "Codex unavailable" });
       const written = yield* Deferred.make<void, AgentError>();
@@ -189,12 +183,12 @@ export class CodexRpc {
           }),
         ),
       );
-    });
+    }) satisfies Effect.Effect<void, AgentError>;
   }
-  notify(method: string): Effect.Effect<void, AgentError> {
-    return this.write(`${JSON.stringify({ method })}\n`);
+  notify(method: string) {
+    return this.write(`${JSON.stringify({ method })}\n`) satisfies Effect.Effect<void, AgentError>;
   }
-  request(method: string, params: unknown): Effect.Effect<unknown, AgentError> {
+  request(method: string, params: unknown) {
     return Effect.gen({ self: this }, function* () {
       if (this.failed) return yield* new AgentError({ code: "exit", message: "Codex unavailable" });
       const id = this.nextId++;
@@ -216,6 +210,6 @@ export class CodexRpc {
           }),
         ),
       );
-    });
+    }) satisfies Effect.Effect<unknown, AgentError>;
   }
 }

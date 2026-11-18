@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { command } from "./commands.js";
 import { fold, initial, invariants, type State } from "./fold.js";
-import { boot, check, created, hello, make, start } from "./fold-fixtures.js";
+import { boot, check, created, hello, make, start } from "./fold.fixture.js";
 
 describe("supervisor outputs", () => {
   it("stops a generation whose container a deploy replaced, and destroys the replacement", () => {

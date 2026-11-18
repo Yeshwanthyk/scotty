@@ -100,7 +100,6 @@ const program = Effect.gen(function* () {
           ended: at("turn.ended") - start,
           answer: answer.turns[0]?.assistant,
           timing,
-          // Durations from separate clocks: no wall-clock offset assumption.
           preProcessAndTransitMs: at("sup.hello") - start - timing.helloAgeMs,
           listeningToHelloMs: timing.helloAgeMs - timing.listeningAgeMs,
           attempts: results.map(({ attempt, elapsedMs, outcome }) => ({

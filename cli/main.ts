@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { BunServices } from "@effect/platform-bun";
 import { Console, Effect } from "effect";
-import { Command, CliError } from "effect/unstable/cli";
+import { Command, CliError } from "effect/cli";
 import { defaultPlace, defaultSize, PlaceKind, Size, sizeShape } from "../src/places/place.js";
 import { version } from "../src/version.js";
 import { CliFailure, failure } from "./client.js";
@@ -247,7 +247,6 @@ const root = Command.make("scotty").pipe(
   ]),
 );
 
-// The library wraps argument errors in ShowHelp, whose own message is only "Help requested".
 const problem = (error: CliError.CliError) =>
   error._tag === "ShowHelp" ? (error.errors[0]?.message ?? "Missing arguments") : error.message;
 
@@ -256,7 +255,6 @@ const report = (error: CliFailure) => {
     console.log(
       JSON.stringify({ error: { code: error.code, message: error.message, hint: error.hint } }),
     );
-  // A cancelled prompt has already said so on screen.
   else if (error.code !== "cancelled")
     console.error(`${red("✗")} ${error.message}\n  ${dim(`→ ${error.hint}`)}`);
   process.exitCode = error.exit;
@@ -274,7 +272,6 @@ if (args.includes("--version") || args.includes("-v")) {
   try {
     await Effect.runPromise(
       Command.runWith(root, { version, renderErrors: false })(args).pipe(
-        // The command library prints its own messages; ours go through output().
         Effect.provideService(Console.Console, { ...console, log: () => {} }),
         Effect.provide(BunServices.layer),
       ),

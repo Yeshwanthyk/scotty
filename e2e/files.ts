@@ -47,7 +47,6 @@ const program = Effect.gen(function* () {
     key: crypto.randomUUID(),
     body: {
       title: `e2e files (${agent})`,
-      // The real agent needs a dev server to film; the stand-in attaches files it writes.
       repo: real ? (process.env.SCOTTY_HATCH_TEST_REPO ?? "") : fixtureRepo,
       ...sessionAgent,
       prompt: prompt(
@@ -67,7 +66,6 @@ const program = Effect.gen(function* () {
     poll(events, (log) => log.some((e) => e.kind === "turn.ended" && e.turn === turn));
   const attached = () =>
     events().pipe(Effect.map((log) => log.filter((e) => e.kind === "file.attached").length));
-  // Every file in turn 0 downloads with its recorded type, size and magic bytes.
   const downloads = Effect.gen(function* () {
     const conversation = yield* request(`${prefix}/conversation`, Conversation);
     const files = conversation.turns[0]?.files ?? [];
@@ -90,12 +88,10 @@ const program = Effect.gen(function* () {
     }
   });
 
-  // 1–3. The agent captures and attaches a screenshot and a video in the first turn.
   yield* ended("0");
   console.log(`Turn 0 (prompt to turn end): ${Math.round((Date.now() - started) / 1000)} s`);
   yield* downloads;
 
-  // 4. A type off the list gets 415, a file over 25 MB gets 413, and neither is recorded.
   const before = yield* attached();
   const req = crypto.randomUUID();
   const refused = [
@@ -124,7 +120,6 @@ const program = Effect.gen(function* () {
   yield* check((yield* attached()) === before, "A refused upload was recorded");
   console.log("Refused uploads: 415, 413, no event");
 
-  // 5. After a stop the files still list and download, from R2 rather than the container.
   yield* request(`${prefix}/stop`, View, { method: "POST" });
   yield* poll(events, (log) => log.reduce(fold, initial).phase === "stopped", {
     stopped: "expected",

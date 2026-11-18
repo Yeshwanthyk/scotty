@@ -13,9 +13,6 @@ import {
 } from "../cli/client.js";
 import { agent, prompt, real, sessionAgent } from "./lib/agent.js";
 
-// A command that kills the agent itself. Claude Code refuses a pkill that matches its own
-// process, so for Claude the shell kills its parent, which is Claude. The stand-ins run commands
-// with `bash -lc`, whose parent is the stand-in.
 const crashCommand = {
   codex: real ? "sleep 5 && pkill -9 -f 'codex app-server'" : "sleep 5 && kill -9 $PPID",
   claude: "sleep 5 && kill -9 $PPID",
@@ -65,10 +62,8 @@ const program = Effect.gen(function* () {
   const lifecycle = (view: typeof View.Type) =>
     view.session.authority.kind === "stable" ? view.session.authority.lifecycle : "booting";
 
-  // 1. The first turn writes the marker and deletes README, then a save lands in R2.
   yield* saved("0");
 
-  // 2. Stop: listed as stopped and its container instance is no longer running.
   yield* request(`${prefix}/stop`, View, { method: "POST" });
   const listed = yield* request("/api/sessions", List);
   const entry = listed.sessions.find((item) => item.identity.id === session.id);
@@ -83,7 +78,6 @@ const program = Effect.gen(function* () {
   );
   console.log("Stopped: ls shows stopped and the instance is not running");
 
-  // 3. A steer resumes the same Codex thread with the saved files.
   const recall = prompt("What was the marker? Reply with the marker only.", "say {{recall}}");
   const recalled = yield* answer("1", recall);
   const threads = (yield* events()).flatMap((e) => (e.kind === "agent.ready" ? [e.session] : []));
@@ -102,7 +96,6 @@ const program = Effect.gen(function* () {
   );
   console.log("Resumed: same thread, marker recalled, marker.txt present, README gone");
 
-  // 4. A crash mid-turn ends stopped, not failed; resume restores the last save.
   yield* saved("2");
   const crash = crypto.randomUUID();
   yield* request(`${prefix}/steer`, Reply, {
@@ -134,7 +127,6 @@ const program = Effect.gen(function* () {
     !(yield* events()).some((e) => e.kind === "invariant.violated"),
     "Invariant violated during crash",
   );
-  // The crash interrupted turn 3, so the next prompt starts turn 4.
   const resumed = yield* request(`${prefix}/conversation`, Conversation);
   yield* check(
     resumed.currentTurn === "4" && resumed.turns.at(-1)?.state === "aborted",

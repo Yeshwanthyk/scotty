@@ -16,10 +16,7 @@ import { instances } from "./lib/instances.js";
 import { Log, waiter } from "./lib/wait.js";
 import { fixtureRepo } from "../protocol/supervisor.js";
 
-// Longer than the 70–140 s after which Cloudflare evicted a quiet Session DO and stopped its
-// container mid-turn.
 const silence = 300;
-// The scripted stand-in sleeps after a minute idle; the real agent keeps the default window.
 const idleAfter = 60_000;
 const check = (ok: boolean, message: string) =>
   ok ? Effect.void : Effect.fail(failure("lifecycle", message, "scotty doctor"));
@@ -46,12 +43,10 @@ const program = Effect.gen(function* () {
   const poll = waiter(request, prefix);
   const events = () => request(`${prefix}/log`, Log);
 
-  // 1. A turn that prints nothing for longer than a quiet Session DO stays in memory.
   yield* poll(events, (log) => log.some((e) => e.kind === "prompt.delivered"));
   const watched = (yield* events()).some((e) => e.kind === "container.watched");
   yield* check(watched, "The container was not watched once the supervisor answered");
   console.log(`Turn running; no requests to the session for ${silence + 30} s`);
-  // Nothing may reach the Session DO here: a request would keep it in memory.
   yield* Effect.sleep(`${silence + 30} seconds`);
   const log = yield* poll(events, (log) =>
     log.some((e) => e.kind === "turn.ended" && e.turn === "0"),
@@ -74,7 +69,6 @@ const program = Effect.gen(function* () {
     `Silent turn completed; the Session DO ${evicted ? "was evicted and reattached" : "stayed in memory"}`,
   );
 
-  // 2. Once the turn's save is done the session is warm, then sleeps and frees its container.
   const warm = yield* poll(
     () => request(prefix, View),
     (view) =>
@@ -105,7 +99,6 @@ const program = Effect.gen(function* () {
   );
   console.log("Asleep: ls shows asleep · idle and the instance is not running");
 
-  // 3. A message wakes it on a new container.
   const wake = crypto.randomUUID();
   yield* request(`${prefix}/steer`, Reply, {
     method: "POST",
@@ -125,7 +118,6 @@ const program = Effect.gen(function* () {
   );
   console.log("Woke: a message resumed the session and its turn completed");
 
-  // 4. The owner's stop is recorded as theirs.
   const stopped = yield* request(`${prefix}/stop`, View, { method: "POST" });
   yield* check(
     stopped.session.authority.kind === "stable" &&

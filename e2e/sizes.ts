@@ -1,7 +1,7 @@
 import { BunServices } from "@effect/platform-bun";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { Effect, Option, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   access,
   AutomationRemoved,
@@ -31,10 +31,8 @@ import { fixtureRepo } from "../protocol/supervisor.js";
 const check = (ok: boolean, message: string) =>
   ok ? Effect.void : Effect.fail(failure("sizes", message, "scotty doctor"));
 
-// Filling a bigger cap would start that many containers.
 const largest = 3;
 
-// What each size reads on track (docs/design.md, Containers): Cloudflare's 1/2 vCPU shows as one CPU.
 const measuredSizes = {
   "standard-1": { cpus: 1, memory: 4401424 },
   "standard-2": { cpus: 1, memory: 6498576 },
@@ -61,7 +59,6 @@ const CliError = Schema.fromJsonString(
   }),
 );
 
-// The CLI as the owner runs it: its exit code, its JSON and anything on stderr.
 const cli = (args: readonly string[]) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -88,13 +85,10 @@ const program = Effect.gen(function* () {
     max <= largest,
     `The stage's maxRunning is ${max}; set "maxRunning": 2 in its config and deploy`,
   );
-  // Fill the cap with sessions of our own, so one of them can be stopped to make room.
   const fill = max - settings.running;
   yield* check(fill >= 1, `${settings.running} of ${max} slots are taken; stop a session first`);
   const made: string[] = [];
-  // Sessions whose runs the stats check reads; removed only at the very end.
   const forStats: string[] = [];
-  // Stops and removes every session made so far, even when a check failed.
   const clean = Effect.suspend(() =>
     Effect.forEach(made.splice(0), (id) =>
       Effect.ignore(
@@ -142,7 +136,6 @@ const program = Effect.gen(function* () {
     });
 
   yield* Effect.gen(function* () {
-    // 1. Up to the cap, sessions start and answer.
     const running: string[] = [];
     for (let i = 0; i < fill; i++) {
       const prefix = yield* create(`running ${i + 1}`, say(`ready${i + 1}`));
@@ -151,7 +144,6 @@ const program = Effect.gen(function* () {
     }
     console.log(`${fill} sessions running; the cap of ${max} is full`);
 
-    // 2. One more stops before its container, with reason cap and the message.
     const extra = yield* create("over the cap", say("room"));
     const refused = yield* waiter(request, extra)(
       () => request(extra, View),
@@ -175,11 +167,9 @@ const program = Effect.gen(function* () {
     );
     console.log(`Refused: "${message}"`);
 
-    // 3. Stopping one makes room; the refused session resumes and answers.
     const first = running[0];
     if (first === undefined) return yield* failure("sizes", "No session filled the cap", "");
     yield* request(`${first}/stop`, View, { method: "POST" });
-    // The stop's destroy releases the slot after the stop returns; resume only once it has.
     yield* waiter(request, first)(
       () => Effect.all([request(first, View), request("/api/settings", Settings)]),
       ([view, now]) =>
@@ -194,7 +184,6 @@ const program = Effect.gen(function* () {
     console.log("The refused session resumed and answered");
   }).pipe(Effect.ensuring(clean));
 
-  // Sizes, one session at a time so a cap of 2 is enough.
   const suffix = crypto.randomUUID().slice(0, 8);
   const starter = `e2e-size-${suffix}`;
   const waker = `e2e-wake-${suffix}`;
@@ -222,7 +211,6 @@ const program = Effect.gen(function* () {
         () => request(`${prefix}/log`, Log),
         (log) => log.some((e) => e.kind === "turn.ended" && e.turn === turn),
       );
-    // Waits for the turn and checks its reading against the size's row in the table.
     const measured = (prefix: string, turn: string, size: typeof Size.Type) =>
       Effect.gen(function* () {
         yield* ended(prefix, turn);
@@ -254,8 +242,6 @@ const program = Effect.gen(function* () {
           `scotty read ${id} printed ${read.out}${read.err}, not size ${size}`,
         );
       });
-    // Sends `measure` as the next turn. A steer's text is not a template, unlike an automation's
-    // prompt, where the stand-in's `{{out}}` would be a missing payload field and skip the run.
     const measureNext = (prefix: string, turn: string, size: typeof Size.Type) =>
       Effect.gen(function* () {
         const req = crypto.randomUUID();
@@ -287,14 +273,12 @@ const program = Effect.gen(function* () {
         yield* freeSlot;
       });
 
-    // 1. With no size a session is standard-1; at standard-3 it has standard-3's CPUs and memory.
     const key = `e2e-size-${suffix}`;
     yield* freeSlot;
     const small = yield* create("at no size", measure, undefined, key);
     yield* shows(small, "standard-1");
     yield* measured(small, "0", "standard-1");
 
-    // 2. A wake from an automation at standard-2 reaches the standard-1 session, which stays so.
     yield* request("/api/automations", AutomationSwitched, {
       method: "POST",
       body: {
@@ -325,10 +309,8 @@ const program = Effect.gen(function* () {
     yield* shows(big, "standard-3");
     const first = yield* measured(big, "0", "standard-3");
 
-    // 3. Stopped and resumed by a steer, the bigger session reads the same again.
     yield* stopped(big);
     const again = yield* measureNext(big, "1", "standard-3");
-    // Only the first start is an event; a resume's new container says hello on a later gen.
     yield* check(
       (yield* request(`${big}/log`, Log)).some((e) => e.kind === "sup.hello" && e.gen > 1),
       "The resume did not start a new container",
@@ -356,7 +338,6 @@ const program = Effect.gen(function* () {
       ),
     );
 
-    // 4. Stopped, a standard-1 session resumes at standard-3 with its files; running, it can't.
     yield* freeSlot;
     const resized = yield* create(
       "resized",
@@ -420,7 +401,6 @@ const program = Effect.gen(function* () {
     const kept = (yield* request(`${resized}/conversation`, Conversation)).turns.at(-1)?.assistant;
     yield* check(kept?.includes("kept") === true, `After the resize, kept.txt reads ${kept}`);
     console.log("Stopped at standard-1, resumed at standard-3 with kept.txt");
-    // A resume naming no size keeps standard-3; the CLI's --size changes it once more.
     yield* stopped(resized);
     yield* request(`${resized}/resume`, View, { method: "POST" });
     yield* shows(resized, "standard-3");
@@ -439,11 +419,9 @@ const program = Effect.gen(function* () {
       `scotty resume --size standard-2 printed ${cliResume.out}${cliResume.err}`,
     );
     console.log("A resume with no size stayed standard-3; scotty resume --size made it standard-2");
-    // Stopped but kept, so the stats check below sees its runs at three sizes.
     yield* stopped(resized);
     forStats.push(...made.splice(0));
 
-    // 5. lite, basic and unknown sizes are refused by the API, MCP and the CLI, naming the field.
     for (const size of refused) {
       const answer = yield* request("/api/sessions", Created, {
         method: "POST",
@@ -476,7 +454,6 @@ const program = Effect.gen(function* () {
       );
     }
     yield* attempt("close", () => mcp.close());
-    // Piped, the CLI prints its errors as JSON on stdout; stderr stays empty.
     for (const size of refused) {
       const ran = yield* cli(["new", fixtureRepo, "no", "--size", size]);
       const error = Schema.decodeUnknownOption(CliError)(ran.out);
@@ -490,8 +467,6 @@ const program = Effect.gen(function* () {
     }
     console.log(`Sizes ${refused.join(", ")}: 400 from the API, an MCP error, CLI exit 2`);
 
-    // 6. A valid --size from the CLI makes a session that `scotty read` shows at that size. The CLI
-    // starts the real agent; the check needs only the create and the read.
     yield* freeSlot;
     const byCli = yield* cli([
       "new",
@@ -514,7 +489,6 @@ const program = Effect.gen(function* () {
     yield* clean;
     console.log("scotty new --size standard-2 made a session that reads standard-2");
 
-    // 7. An automation's size reaches the session it starts.
     yield* request("/api/automations", AutomationSwitched, {
       method: "POST",
       body: {
@@ -542,15 +516,11 @@ const program = Effect.gen(function* () {
     console.log(`The automation's session ${run.session} reads standard-2`);
     yield* clean;
 
-    // 8. The repository default sizes a session that names none, and only when it is made. It is
-    // set only around the creates that need it, since other tests expect standard-1.
     yield* freeSlots(2);
     yield* request(repoPath, RepoSize, { method: "PUT", body: { size: "standard-2" } });
     const retry = crypto.randomUUID();
     const byDefault = yield* create("at the repo default", measure, undefined, undefined, retry);
     const override = yield* create("over the repo default", measure, "standard-1");
-    // A retry of the first create, naming no size, after the default changed: that session, not
-    // a conflict, and still at the size it was made at.
     yield* request(repoPath, RepoSize, { method: "PUT", body: { size: "standard-3" } });
     const retried = yield* request("/api/sessions", Created, {
       method: "POST",
@@ -610,9 +580,6 @@ const program = Effect.gen(function* () {
     }
     console.log(`Repo defaults ${refused.join(", ")} and malformed repositories: 400`);
 
-    // 9. Stats: the fixture repository's hours by size match the runs in its sessions' logs, and
-    // each size's cost is its hours × the rate. Sessions removed above are in neither. 7 days is
-    // the smallest window, and covers this run.
     const stats = yield* request("/api/stats?window=7d", Stats);
     const row = stats.repos.find((repo) => repo.repo === fixtureRepo);
     const from = stats.now - 7 * 86_400_000;
@@ -647,8 +614,6 @@ const program = Effect.gen(function* () {
       ["standard-1", "standard-3"].every((size) => row?.sizes.some((share) => share.size === size)),
       `/api/stats shows ${fixtureRepo} at ${JSON.stringify(row?.sizes)}, not standard-1 and standard-3`,
     );
-    // Both sides above size runs with `sessionStats`; the resized session's raw events say what
-    // they should be: `created.size`, then each resume's, the last kept when one names none.
     for (const id of forStats) {
       const log = yield* request(`/api/sessions/${id}/log`, Log);
       const named: (typeof Size.Type)[] = [];
@@ -676,7 +641,6 @@ const program = Effect.gen(function* () {
             Effect.ignore(request(`/api/sessions/${id}`, Removed, { method: "DELETE" })),
           ),
         ),
-        // Other e2e tests expect the fixture repository at standard-1.
         Effect.ignore(request(repoPath, RepoSize, { method: "DELETE" })),
         ...[starter, waker].map((name) =>
           Effect.ignore(

@@ -21,7 +21,7 @@ export class SupervisorLink {
 
   constructor(private readonly consume: (input: SocketInput) => Effect.Effect<void>) {}
 
-  send(message: ToSupervisorMessage): void {
+  send(message: ToSupervisorMessage) {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify({ ...message, n: ++this.outgoing }));
@@ -41,7 +41,6 @@ export class SupervisorLink {
   ) {
     const enqueue = (operation: () => Effect.Effect<void, unknown>) => this.enqueue(operation);
     const consume = this.consume;
-    // The replaced socket is no longer current, so its close is not reported.
     const setSocket = (socket: WebSocket) => {
       const old = this.socket;
       this.socket = socket;
@@ -49,8 +48,6 @@ export class SupervisorLink {
     };
     const isCurrent = (socket: WebSocket) => this.socket === socket;
     return Effect.gen(function* () {
-      // A refused connection rejects; a container still booting refuses, and the caller
-      // retries a DialError. A dial abandoned by its attempt's timeout aborts `signal`.
       const candidate = yield* Effect.tryPromise({
         try: (signal) =>
           port().socket(`http://container/?gen=${gen}&after=${after}`, headers, signal),
@@ -83,8 +80,7 @@ export class SupervisorLink {
     });
   }
 
-  // A failed input (an undecodable message, a defect in `consume`) closes the socket.
-  private enqueue(operation: () => Effect.Effect<void, unknown>): void {
+  private enqueue(operation: () => Effect.Effect<void, unknown>) {
     this.tail = this.tail
       .then(() => Effect.runPromise(operation()))
       .catch(() => {

@@ -63,7 +63,6 @@ export function githubEvents(request: ReturnType<typeof client>) {
     const suffix = crypto.randomUUID().slice(0, 8);
     const hook = `e2e-github-${suffix}`;
     const name = `e2e-babysit-${suffix}`;
-    // Removed even when a check fails, so a failed run leaves nothing on the stage.
     const cleanup = Effect.gen(function* () {
       yield* request(`/api/automations/${name}`, AutomationRemoved, { method: "DELETE" }).pipe(
         Effect.ignore,
@@ -90,7 +89,6 @@ export function githubEvents(request: ReturnType<typeof client>) {
         ),
         "The GitHub connection and hook URL were not listed",
       );
-      // A unique PR number keeps this test's key separate from other runs on the fixture repo.
       const pr = Date.now();
       const key = `gh:${fixtureRepo}#${pr}`;
       const session = yield* request("/api/sessions", Created, {
@@ -176,7 +174,6 @@ export function githubEvents(request: ReturnType<typeof client>) {
         conversation.turns[1]?.assistant.includes(`Fixed ${fixtureRepo}#${pr}`) === true,
         "The second turn lacks the rendered PR number",
       );
-      // A delivery reaches the session only as a prompt; saves and socket events keep arriving.
       const prompts = request(`${prefix}/log`, Log).pipe(
         Effect.map((events) => JSON.stringify(events.filter((e) => e.kind === "prompt.requested"))),
       );

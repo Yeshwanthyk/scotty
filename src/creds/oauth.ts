@@ -1,5 +1,6 @@
-import { Data, Effect, Encoding, Result, Schema } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { Data, Effect, Result, Schema } from "effect";
+import * as Base64Url from "effect/encoding/Base64Url";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 const issuer = "https://auth.openai.com";
 const clientId = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -44,7 +45,7 @@ const failure = (stage: OAuthFailure["stage"], status?: number, code?: string) =
     ...(code === undefined ? {} : { code }),
   });
 
-const errorCode = (value: unknown): string | undefined => {
+const errorCode: (value: unknown) => string | undefined = (value) => {
   const parsed = Schema.decodeUnknownResult(UpstreamError)(value);
   if (Result.isFailure(parsed)) return undefined;
   const { error, code } = parsed.success;
@@ -136,14 +137,14 @@ export const exchangeCode = (authorization: typeof Authorization.Type) =>
     const tokens = yield* decode(Tokens, yield* responseJson(response, "exchange"), "exchange");
     const segment = tokens.id_token.split(".")[1];
     if (segment === undefined) return yield* failure("claims");
-    const decoded = Encoding.decodeBase64UrlString(segment);
+    const decoded = Base64Url.decodeString(segment);
     if (Result.isFailure(decoded)) return yield* failure("claims");
     const jwt = yield* decode(Schema.fromJsonString(Jwt), decoded.success, "claims");
     const accountId =
       jwt["https://api.openai.com/auth"]?.chatgpt_account_id ?? jwt.chatgpt_account_id;
     const accessSegment = tokens.access_token.split(".")[1];
     if (!accountId || accessSegment === undefined) return yield* failure("claims");
-    const accessDecoded = Encoding.decodeBase64UrlString(accessSegment);
+    const accessDecoded = Base64Url.decodeString(accessSegment);
     if (Result.isFailure(accessDecoded)) return yield* failure("claims");
     const accessClaims = yield* decode(
       Schema.fromJsonString(Schema.Struct({ exp: Schema.Number })),

@@ -1,10 +1,6 @@
 import { Effect, Schema } from "effect";
 import { tarReader } from "./tar.js";
 
-// A skill source is a GitHub repository, a folder in it and a ref. Each skill is a folder
-// right under that folder holding SKILL.md. Scotty keeps the repository's tarball at one commit
-// in R2 and the supervisor unpacks the folder whole, so links between skills keep working.
-
 export const skillName = /^[a-z0-9][a-z0-9-]{0,63}$/;
 export const maxInstructionBytes = 64 * 1024;
 export const maxSourceBytes = 64 * 1024 * 1024;
@@ -17,7 +13,6 @@ const owner = "[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})";
 const repository = "[A-Za-z0-9._-]{1,100}";
 const segment = "(?!\\.\\.?(?:/|$))[A-Za-z0-9._-]+";
 const ref = "[A-Za-z0-9._/-]{1,200}";
-// owner/repo[/path][@ref], or a github.com link to the repository or a folder in it.
 const spec = new RegExp(`^(${owner}/${repository})((?:/${segment})*)(?:@(${ref}))?$`);
 const link = new RegExp(
   `^https://github\\.com/(${owner}/${repository})(?:/tree/([A-Za-z0-9._-]{1,200})((?:/${segment})*))?/?$`,
@@ -25,7 +20,7 @@ const link = new RegExp(
 
 export type SourceSpec = { repo: string; path: string; ref: string | null };
 
-export const parseSource = (text: string): SourceSpec | undefined => {
+export const parseSource: (text: string) => SourceSpec | undefined = (text) => {
   const trimmed = text.trim();
   const short = spec.exec(trimmed);
   if (short?.[1] !== undefined)
@@ -40,7 +35,6 @@ export const parseSource = (text: string): SourceSpec | undefined => {
   return undefined;
 };
 
-// The source's name everywhere: owner/repo or owner/repo/path.
 export const sourceId = (source: { repo: string; path: string }) =>
   source.path === "" ? source.repo : `${source.repo}/${source.path}`;
 
@@ -53,9 +47,7 @@ export const SourceId = Schema.String.check(
 
 type Frontmatter = { name?: string; description?: string; manual?: boolean };
 
-// `name`, `description` and `disable-model-invocation` from the YAML frontmatter; a folded or
-// literal description (`>` or `|`) joins its indented lines.
-function frontmatter(text: string): Frontmatter {
+const frontmatter: (text: string) => Frontmatter = function frontmatter(text) {
   const block = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1];
   if (block === undefined) return {};
   const lines = block.split(/\r?\n/);
@@ -78,10 +70,8 @@ function frontmatter(text: string): Frontmatter {
     else out.manual = value === "true";
   });
   return out;
-}
+};
 
-// A cheap running hash of each skill folder's paths and bytes, to tell which skills a refresh
-// changed. Not a security check.
 const mix = (hash: [number, number], bytes: Uint8Array) => {
   let [a, b] = hash;
   for (const byte of bytes) {
@@ -97,11 +87,9 @@ const hex = (hash: [number, number]) =>
 export type FoundSkill = { name: string; description: string; manual: boolean; digest: string };
 export type Scan = { skills: FoundSkill[]; skipped: string[] };
 
-// One pass over a GitHub tarball (gzip): every `<top>/<path>/<name>/SKILL.md` and a digest of
-// each skill folder.
 export const scanTarball = (gzip: ReadableStream<BufferSource>, path: string) =>
   Effect.tryPromise({
-    try: async (): Promise<Scan> => {
+    try: async () => {
       const folders = new Map<
         string,
         { hash: [number, number]; file: Uint8Array[]; size: number }
@@ -153,7 +141,7 @@ export const scanTarball = (gzip: ReadableStream<BufferSource>, path: string) =>
             digest: hex(seen.hash),
           });
       }
-      return { skills, skipped };
+      return { skills, skipped } satisfies Scan;
     },
     catch: () => new SourceFailure({ message: "The tarball is not a readable tar.gz" }),
   });
@@ -163,7 +151,6 @@ export class SourceFailure extends Schema.TaggedError<SourceFailure>()("SourceFa
   status: Schema.optionalKey(Schema.Int),
 }) {}
 
-// A tarball's bytes as they arrive, whole (they go to R2 as they came) up to the cap.
 export const readTarball = (body: ReadableStream<Uint8Array<ArrayBuffer>>) =>
   Effect.gen(function* () {
     const read = yield* Effect.tryPromise({
@@ -172,7 +159,6 @@ export const readTarball = (body: ReadableStream<Uint8Array<ArrayBuffer>>) =>
         let size = 0;
         for await (const chunk of body) {
           size += chunk.length;
-          // Leaving the loop cancels the stream.
           if (size > maxSourceBytes) return undefined;
           parts.push(chunk);
         }

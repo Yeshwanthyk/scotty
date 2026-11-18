@@ -5,11 +5,8 @@ import { fold, initial } from "../../src/session/fold.js";
 
 export const Log = Schema.Array(SessionEvent);
 
-// Past the Session DO's own 360 s workspace deadline, so a slow start ends on its verdict.
 const limit = 420_000;
 
-// Waits for `done`, and gives up as soon as the session ends, with the reason it ended.
-// `stopped: "expected"` is for waits that begin on a session already stopped.
 export const waiter =
   (request: ReturnType<typeof client>, prefix: string) =>
   <A>(
@@ -28,7 +25,6 @@ export const waiter =
           state.phase === "failed" ||
           (state.phase === "stopped" && options?.stopped !== "expected");
         if (ended) {
-          // The session may have reached `done` between the read and the log fetch.
           const last = yield* read();
           if (done(last)) return last;
           const error = log.findLast((event) => event.kind === "sup.error");

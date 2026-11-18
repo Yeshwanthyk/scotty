@@ -10,12 +10,7 @@ const fromSupervisor = {
   n: Schema.Natural.check(Schema.isGreaterThan(0)),
 };
 export const AgentKind = Schema.Literals(["codex", "claude"]);
-// `initial:` and `stalled:` ids belong to the Session DO's own requests.
 const ClientReq = Schema.String.check(Schema.isPattern(/^(?!initial:|stalled:)/));
-// Why a container stopped: the owner stopped it, an automation ended it, it slept (idle) or was stopped for making no
-// progress (stalled), it exited on its own (crashed with an exit code, or exited cleanly), it
-// was replaced under the session (deploy), it was found gone without a recorded exit, or it
-// never started because the stage's running cap was full (cap).
 export const StopReason = Schema.Literals([
   "user",
   "ended",
@@ -43,7 +38,6 @@ export const TimeoutOp = Schema.Union([
 ]);
 export type TimeoutOp = typeof TimeoutOp.Type;
 
-// What started a session, when it was not a person in the UI or CLI without a key.
 export const Origin = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("hook"),
@@ -73,23 +67,15 @@ export const SessionEvent = Schema.Union([
     title: Schema.String,
     prompt: Schema.String,
     images: Schema.optionalKey(PromptImages),
-    // The first prompt's request id, so a retried create is known as one. Absent in logs
-    // written before creators named it: those used `initial:<gen>`.
     req: Schema.optionalKey(ClientReq),
     image: Schema.String,
-    // Absent in logs written before places: those ran on Cloudflare.
     place: Schema.optionalKey(PlaceKind),
-    // The container's size; absent is the default size, as in logs written before sizes.
     size: Schema.optionalKey(Size),
-    // Runs the agent's scripted stand-in instead of the agent; only e2e asks for it.
     scripted: Schema.optionalKey(Schema.Literal(true)),
     origin: Schema.optionalKey(Origin),
-    // Milliseconds of idleness before the session sleeps, when shorter than the default.
     idleAfter: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("container.start"), gen: Schema.Natural }),
-  // The place's answers about the session's machine. A handle names a container, sandbox or VM.
-  // `created` answers a create for `gen`; `paused` and `gone` answer a pause, resume or status.
   Schema.Struct({
     ...envelope,
     kind: Schema.Literal("place.created"),
@@ -122,9 +108,6 @@ export const SessionEvent = Schema.Union([
     kind: Schema.Literal("sup.hello"),
     version: Schema.String,
     boot: Schema.String,
-    // The marker a kept disk carries: whose workspace it is, the commit its branch was made
-    // from, and the agent's thread. Absent on a new disk and in logs written before places kept
-    // machines.
     workspace: Schema.optionalKey(
       Schema.Struct({
         session: Schema.String,
@@ -141,7 +124,6 @@ export const SessionEvent = Schema.Union([
     base: Schema.String,
     branch: Schema.String,
     commit: Schema.String,
-    // Absent in logs written before the supervisor reported them.
     ms: Schema.optionalKey(Schema.Number),
     retried: Schema.optionalKey(Schema.Array(Schema.String)),
   }),
@@ -206,23 +188,17 @@ export const SessionEvent = Schema.Union([
     kind: Schema.Literal("container.stopped"),
     gen: Schema.Natural,
     req: Schema.optionalKey(ClientReq),
-    // Absent in logs written before stops recorded a reason.
     reason: Schema.optionalKey(StopReason),
     exitCode: Schema.optionalKey(Schema.Int),
-    // A cap stop names the cap that was full.
     max: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
-    // An idle stop names the idle timeout it checked; it applies only while that check stands.
     idleSeq: Schema.optionalKey(Schema.Natural),
   }),
-  // The Session DO watches the running container for this generation until its watch deadline.
   Schema.Struct({ ...envelope, kind: Schema.Literal("container.watched"), gen: Schema.Natural }),
   Schema.Struct({
     ...envelope,
     kind: Schema.Literal("resume.requested"),
-    // The size to resume at; absent keeps the current one, as in logs written before resizing.
     size: Schema.optionalKey(Size),
   }),
-  // The owner used the session's terminal or a preview; it pushes back the idle deadline.
   Schema.Struct({ ...envelope, kind: Schema.Literal("active") }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("save.done"), turn: Schema.String }),
   Schema.Struct({
@@ -231,7 +207,6 @@ export const SessionEvent = Schema.Union([
     turn: Schema.String,
     code: Schema.String,
   }),
-  // The bytes are already in R2 at files/<session>/<file> when this is written.
   Schema.Struct({
     ...envelope,
     kind: Schema.Literal("file.attached"),

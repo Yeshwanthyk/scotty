@@ -14,7 +14,7 @@ type Resend =
     }
   | { readonly req: string; readonly kind: "interrupt"; readonly turn: string };
 
-const toResend = (request: Request): Resend =>
+const toResend: (request: Request) => Resend = (request) =>
   request.kind === "prompt"
     ? {
         req: request.req,
@@ -26,20 +26,13 @@ const toResend = (request: Request): Resend =>
     : { req: request.req, kind: "interrupt", turn: request.turn };
 
 export type Command =
-  // Makes the machine for `gen`, after removing `remove`, a handle gone or let go.
   | { readonly kind: "create"; readonly gen: number; readonly remove?: string }
-  // Wakes the session's rested machine for `gen`.
   | { readonly kind: "resume"; readonly gen: number; readonly handle: string }
-  // Reaches the supervisor on the machine `gen` already has.
   | { readonly kind: "connect"; readonly gen: number }
-  // A stop: pause or remove the machine; both, and a stop with no machine, give back the
-  // session's running slot.
   | { readonly kind: "pause"; readonly handle: string }
   | { readonly kind: "remove"; readonly handle: string }
   | { readonly kind: "release" }
-  // Asks the place about a pause it hasn't answered.
   | { readonly kind: "check"; readonly handle: string }
-  // A second machine the session can't keep.
   | { readonly kind: "discard"; readonly handle: string }
   | { readonly kind: "dial"; readonly gen: number; readonly after: number }
   | {
@@ -51,7 +44,6 @@ export type Command =
       readonly agentKind: typeof AgentKind.Type;
       readonly scripted?: true;
       readonly resume?: { readonly threadId: string; readonly commit: string };
-      // The machine kept the session's disk: nothing is restored from the save.
       readonly fromDisk?: true;
     }
   | {
@@ -72,15 +64,13 @@ export type Command =
   | { readonly kind: "idle"; readonly gen: number; readonly seq: number }
   | { readonly kind: "save"; readonly gen: number; readonly turn: string; readonly ack: number };
 
-const ackFor = (
+const ackFor: (
   state: State,
   output: { readonly gen: number; readonly n: number },
-): Command | undefined =>
+) => Command | undefined = (state, output) =>
   ackRecorded(state, output) ? { kind: "ack", gen: output.gen, ack: output.n } : undefined;
 
-// What a wake at `gen` asks of the place: a new machine, the rested one woken, or the one it
-// already has reached. A machine still pausing is woken once its place answers.
-const wake = (state: State, gen: number): Command | undefined => {
+const wake: (state: State, gen: number) => Command | undefined = (state, gen) => {
   const place = state.place;
   if (place === undefined)
     return {
@@ -94,8 +84,7 @@ const wake = (state: State, gen: number): Command | undefined => {
     : { kind: "resume", gen, handle: place.handle };
 };
 
-// A stop's command: the machine paused or removed, or only the slot given back.
-const stopping = (state: State, seq: number): Command => {
+const stopping: (state: State, seq: number) => Command = (state, seq) => {
   if (state.place?.status === "pausing" && state.place.seq === seq)
     return { kind: "pause", handle: state.place.handle };
   return state.gone?.seq === seq
@@ -103,7 +92,10 @@ const stopping = (state: State, seq: number): Command => {
     : { kind: "release" };
 };
 
-export function command(state: State, event: SessionEvent): Command | undefined {
+export const command: (state: State, event: SessionEvent) => Command | undefined = function command(
+  state,
+  event,
+) {
   if (state.lastSeq !== event.seq) return undefined;
   if (!live(state) && state.stopSeq === event.seq) return stopping(state, event.seq);
   switch (event.kind) {
@@ -112,7 +104,6 @@ export function command(state: State, event: SessionEvent): Command | undefined 
       return state.place.status === "pausing" && state.place.seq === event.seq
         ? { kind: "pause", handle: event.handle }
         : undefined;
-    // A wake that waited for the machine goes on: the paused one woken, a gone one replaced.
     case "place.paused":
     case "place.gone":
       return live(state) &&
@@ -128,8 +119,6 @@ export function command(state: State, event: SessionEvent): Command | undefined 
           : undefined;
   }
   if (!live(state)) return undefined;
-  // Every wake begins a generation: a resume, a prompt to a stopped session, a first start, or a
-  // woken machine found not to be the session's.
   if (state.gen !== undefined && state.startSeq === event.seq) return wake(state, state.gen);
   switch (event.kind) {
     case "sup.redial":
@@ -245,4 +234,4 @@ export function command(state: State, event: SessionEvent): Command | undefined 
     default:
       return undefined;
   }
-}
+};

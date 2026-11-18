@@ -3,9 +3,6 @@ import { Effect, FileSystem, Option, Schema } from "effect";
 import { keepsDisk } from "./place.js";
 import { takeEnv } from "./runtime.js";
 
-// A place outside Cloudflare gives the container k on its first boot; it is kept on the disk, so
-// a supervisor started again (docker start) checks the next gen's dial with what it already has.
-// On Cloudflare there is no k, and the supervisor is reachable only from its Session DO.
 const keyFile = "/var/lib/scotty/key";
 const hexKey = /^[0-9a-f]{64}$/;
 
@@ -18,7 +15,6 @@ export const loadKey = Effect.gen(function* () {
   const given = takeEnv("SCOTTY_SUPERVISOR_KEY");
   const stored = yield* fs.readFileString(keyFile).pipe(Effect.option);
   const key = Option.isSome(stored) ? stored.value.trim() : given;
-  // A place that keeps its disk is reachable by more than its Session DO, so it never runs open.
   if (key === "" && keepsDisk())
     return yield* new KeyError({ message: "no supervisor key for a session that keeps its disk" });
   if (key === "") return Option.none<Uint8Array>();
@@ -30,8 +26,11 @@ export const loadKey = Effect.gen(function* () {
   return Option.some(Uint8Array.from(Buffer.from(key, "hex")));
 });
 
-// The caller proves it knows k for this gen: hex HMAC-SHA256(k, String(gen)).
-export const authorized = (key: Uint8Array, gen: number, header: string | null): boolean => {
+export const authorized: (key: Uint8Array, gen: number, header: string | null) => boolean = (
+  key,
+  gen,
+  header,
+) => {
   if (header === null || !hexKey.test(header)) return false;
   const expected = createHmac("sha256", key).update(String(gen)).digest();
   return timingSafeEqual(expected, Buffer.from(header, "hex"));

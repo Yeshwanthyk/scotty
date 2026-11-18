@@ -5,9 +5,9 @@ import { connect } from "node:tls";
 import * as ui from "@clack/prompts";
 import { BunServices } from "@effect/platform-bun";
 import { Effect, Exit, Option, Schema, Stream } from "effect";
-import { Command, Flag } from "effect/unstable/cli";
+import { Command, Flag } from "effect/cli";
 import { renderUnicodeCompact } from "uqr";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { ChatGptStatus, ClaudeStatus, GitHubStatus, failure } from "../client.js";
 import { Config, configPath, readConfig, removeConfig, writeConfig } from "../config.js";
 import { bold, dim, green, launch, output, red, withClient } from "./common.js";
@@ -44,7 +44,6 @@ const terminalOnly = (command: string) =>
       );
   });
 
-// The wordmark in half-block letters, shaded teal to pink across a dim field of stars.
 const letters = ["█▀▀ █▀▀ █▀█ ▀█▀ ▀█▀ █ █", "▄▄█ █▄▄ █▄█  █   █   █ "];
 const sky = ["   ·     ✦          ·       ✧      ·", "      ✧        ·        ✦     ·  "];
 const shades = [44, 38, 39, 33, 63, 99, 135, 171, 170, 169, 168];
@@ -52,7 +51,7 @@ const color = process.env.NO_COLOR === undefined;
 const paint = (code: number, text: string) =>
   color ? `\u001b[38;5;${code}m${text}\u001b[0m` : text;
 const shade = (line: string) =>
-  [...line]
+  Array.from(line)
     .map((char, i) =>
       char === " "
         ? char
@@ -76,7 +75,6 @@ const cancelled = () => failure("cancelled", "Cancelled", "Run it again when rea
 
 const answered = <A>(value: A): value is Exclude<A, symbol> => typeof value !== "symbol";
 
-// A clack prompt as an Effect; Esc or Ctrl-C ends the command with exit 2.
 const ask = <A>(prompt: () => Promise<A>) =>
   Effect.tryPromise({
     try: prompt,
@@ -89,7 +87,6 @@ const ask = <A>(prompt: () => Promise<A>) =>
     }),
   );
 
-// A field of the config; Enter keeps the current value, shown greyed in the box.
 const field = (
   message: string,
   valid: (value: string) => boolean,
@@ -106,7 +103,6 @@ const field = (
     }),
   ).pipe(Effect.map((value) => value.trim() || (current ?? "")));
 
-// A list from Cloudflare behind a spinner; undefined when it could not be read, so init asks instead.
 const listed = <A, E, R>(text: string, list: Effect.Effect<ReadonlyArray<A>, E, R>) =>
   Effect.gen(function* () {
     const spin = ui.spinner();
@@ -122,7 +118,6 @@ const listed = <A, E, R>(text: string, list: Effect.Effect<ReadonlyArray<A>, E, 
 
 const cloudflare = load("Cloudflare", () => import("../../deploy/cloudflare.ts"));
 
-// The account the Cloudflare token can see; one is taken without asking.
 const accountChoice = (current: string | undefined, layer: CloudflareLayer) =>
   Effect.gen(function* () {
     const { accounts } = yield* cloudflare;
@@ -151,7 +146,6 @@ const accountChoice = (current: string | undefined, layer: CloudflareLayer) =>
     );
   });
 
-// The domain Scotty runs under, from the account's zones.
 const domainChoice = (accountId: string, current: Config | undefined, layer: CloudflareLayer) =>
   Effect.gen(function* () {
     const { zones } = yield* cloudflare;
@@ -199,7 +193,6 @@ const domainChoice = (accountId: string, current: Config | undefined, layer: Clo
     return { domain: zone.name, zoneId: zone.id };
   });
 
-// Every question first, so the slow part runs unattended.
 const questions = (previous: Config | undefined, layer: CloudflareLayer) =>
   Effect.gen(function* () {
     const f = Config.fields;
@@ -233,7 +226,6 @@ const questions = (previous: Config | undefined, layer: CloudflareLayer) =>
     return { stage, email, accountId, domain, zoneId, host };
   });
 
-// A re-run offers the saved answers whole; Enter keeps them.
 const settings = (previous: Config | undefined, layer: CloudflareLayer) =>
   Effect.gen(function* () {
     if (previous === undefined) return yield* questions(previous, layer);
@@ -277,7 +269,6 @@ const onPath = (command: string) =>
     .split(delimiter)
     .some((dir) => dir !== "" && existsSync(join(dir, command)));
 
-// A sign-in init runs for you when it is missing; it stops init if it does not finish.
 const ensure = (
   name: string,
   why: string,
@@ -301,7 +292,6 @@ const ensure = (
     ui.log.success(`${name} ${dim("signed in")}`);
   });
 
-// What a new machine lacks, fixed or named before any question.
 const preflight = Effect.gen(function* () {
   const missing = ["cloudflared", "gh"].filter((command) => !onPath(command));
   if (missing.length > 0) {
@@ -326,8 +316,6 @@ const preflight = Effect.gen(function* () {
   );
 });
 
-// clack's spinner reads keys in raw mode and exits 0 on Ctrl-C without calling onCancel, so Ctrl-C
-// is turned into its abort signal, which does. onCancel must exit before clack's own key handler.
 const CtrlC = Schema.Struct({ ctrl: Schema.Literal(true), name: Schema.Literal("c") });
 const stoppable = (cancelMessage: string, onCancel: () => void) => {
   const abort = new AbortController();
@@ -339,9 +327,7 @@ const stoppable = (cancelMessage: string, onCancel: () => void) => {
   return { spin, release: () => process.stdin.off("keypress", key) };
 };
 
-// Slow steps as timed spinners; a failure shows the step's last lines of output. Ctrl-C says what
-// was left behind and how to go on.
-const spinners = (stopped: string): Report => {
+const spinners: (stopped: string) => Report = (stopped) => {
   let running: ReturnType<typeof stoppable> | undefined;
   let current = "";
   const end = () => {
@@ -372,8 +358,8 @@ const DnsReply = Schema.Struct({
   ),
 });
 
-// Cloudflare's resolver over HTTPS, asked afresh each time. A resolver in this process would
-// remember "no such name" from before the deploy for up to half an hour.
+const noLeftovers: ReadonlyArray<string> = [];
+
 const records = (name: string, type: "A" | "AAAA") =>
   Effect.tryPromise(() =>
     fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=${type}`, {
@@ -386,10 +372,9 @@ const records = (name: string, type: "A" | "AAAA") =>
         .filter((answer) => answer.type === (type === "A" ? 1 : 28))
         .map((answer) => answer.data),
     ),
-    Effect.orElseSucceed((): ReadonlyArray<string> => []),
+    Effect.orElseSucceed(() => noLeftovers),
   );
 
-// The address as the world sees it: its DNS record, then a certificate for the name.
 const published = (host: string) =>
   records(host, "A").pipe(Effect.map((addresses) => addresses[0]));
 
@@ -405,19 +390,14 @@ const certified = (host: string, address: string) =>
     socket.once("timeout", () => end(false));
   });
 
-// Any record for a name, as Cloudflare's resolver sees it.
 const answers = (name: string) =>
   Effect.gen(function* () {
     return (yield* records(name, "A")).length > 0 || (yield* records(name, "AAAA")).length > 0;
   });
 
-// A stage takes over the address and the domain's preview record and route, and its teardown
-// deletes them, so a new stage may not share them with another deployment.
 const taken = (config: Config, layer: CloudflareLayer) =>
   Effect.gen(function* () {
-    const left = yield* leftoversWith(config, layer).pipe(
-      Effect.orElseSucceed((): ReadonlyArray<string> => []),
-    );
+    const left = yield* leftoversWith(config, layer).pipe(Effect.orElseSucceed(() => noLeftovers));
     if (left.includes(`scotty-${config.stage}`)) return undefined;
     if (yield* answers(config.host)) return `https://${config.host}`;
     if (yield* answers(`1-scotty-preview-check.${config.domain}`))
@@ -425,15 +405,12 @@ const taken = (config: Config, layer: CloudflareLayer) =>
     return undefined;
   });
 
-// This Mac's own lookup, which can remember the name as missing from before the deploy.
 const resolvesHere = (host: string) =>
   Effect.tryPromise(() => lookup(host)).pipe(
     Effect.as(true),
     Effect.orElseSucceed(() => false),
   );
 
-// A new host needs its DNS record and certificate before Access can sign in to it. There is no
-// limit: each stage says what it waits for, and Ctrl-C says how to go on.
 const reachable = (host: string, stage: string) =>
   Effect.gen(function* () {
     const url = `https://${host}`;
@@ -446,7 +423,6 @@ const reachable = (host: string, stage: string) =>
     });
     const started = performance.now();
     const slow = () => performance.now() - started > 600_000;
-    // A new address's DNS record often takes several minutes to appear.
     spin.start(`Waiting for DNS ${dim(`— ${host}`)}`);
     while (true) {
       const address = yield* published(host);
@@ -473,7 +449,6 @@ const elapsed = (since: number) => {
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 };
 
-// cloudflared prints the Access token when it succeeds, so only a line that is just a link is shown.
 const accessLogin = (url: string, email: string) =>
   Effect.gen(function* () {
     ui.log.step(`${bold("Cloudflare Access")} ${dim(`— a browser opens; sign in with ${email}`)}`);
@@ -518,8 +493,6 @@ const accessLogin = (url: string, email: string) =>
     ),
   );
 
-// GitHub is required; each chosen agent signs in unless it already is, and a failed one is left
-// for doctor to report.
 const signIns = (agents: ReadonlyArray<Agent>) =>
   Effect.gen(function* () {
     const api = yield* withClient;
@@ -701,7 +674,6 @@ export const teardown = Command.make(
             )
           : undefined,
       );
-      // The config stays until Cloudflare shows nothing of the stage, so a rerun can finish it.
       const left = yield* leftoversWith(config, layer).pipe(
         Effect.mapError(() =>
           failure("teardown", "Could not check what is left in Cloudflare", "scotty teardown"),

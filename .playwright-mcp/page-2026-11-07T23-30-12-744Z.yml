@@ -1,0 +1,24 @@
+- generic [ref=f3e2]:
+    - complementary "Sessions" [ref=f3e3]:
+        - generic [ref=f3e4]:
+            - link "Scotty" [ref=f3e5] [cursor=pointer]:
+                - /url: /sessions
+            - button "Hide sidebar" [ref=f3e46] [cursor=pointer]
+        - navigation "Session controls" [ref=f3e49]:
+            - generic [ref=f3e50]:
+                - button "Search ⌘K" [ref=f3e51] [cursor=pointer]:
+                    - generic [ref=f3e54]: Search
+                    - generic [ref=f3e55]: ⌘K
+                - generic "Filter sessions" [ref=f3e56]:
+                    - button "Filter sessions" [ref=f3e58] [cursor=pointer]
+            - link "New session" [ref=f3e61] [cursor=pointer]:
+                - /url: /sessions/create
+        - generic "Loading sessions" [ref=f3e65]
+        - navigation "Pages" [ref=f3e78]:
+            - link "Automations" [ref=f3e79] [cursor=pointer]:
+                - /url: /automations
+            - link "Stats" [ref=f3e82] [cursor=pointer]:
+                - /url: /stats
+            - link "Settings" [ref=f3e85] [cursor=pointer]:
+                - /url: /settings
+    - main [ref=f3e88]

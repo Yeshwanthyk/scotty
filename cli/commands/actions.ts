@@ -1,5 +1,5 @@
 import { Effect, Exit, Option, Schema } from "effect";
-import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/cli";
 import { Size } from "../../src/places/place.js";
 import { Log, Removed, Reply, View, failure } from "../client.js";
 import { removeConnection } from "./connections.js";
@@ -69,7 +69,6 @@ const lifecycle = (
 export const stop = Command.make("stop", { id }, ({ id: value }) =>
   lifecycle("stop", "Stopping", value),
 );
-// A size resumes the stopped session in a container of that size.
 export const resume = Command.make(
   "resume",
   { id, size: Flag.Literals("size", Size.literals).pipe(Flag.optional) },
@@ -77,8 +76,6 @@ export const resume = Command.make(
     lifecycle("resume", "Resuming", value, Option.isSome(size) ? { size: size.value } : undefined),
 );
 
-// `rm <id…>` deletes sessions; `rm connection <name>` deletes that.
-// Every id is resolved before anything is deleted.
 export const rm = Command.make(
   "rm",
   { ids: Argument.String("id").pipe(Argument.atLeast(1)) },
@@ -91,7 +88,6 @@ export const rm = Command.make(
         return yield* removeConnection(yield* withClient, name);
       }
       const api = yield* withClient;
-      // Two prefixes of one id would delete it twice.
       const full = [...new Set(yield* sessionIds(api, ids, "rm"))];
       const removed: (typeof Removed.Type)[] = [];
       for (const id of full) {
@@ -100,7 +96,6 @@ export const rm = Command.make(
         );
         if (Exit.isFailure(result)) {
           if (removed.length === 0) return yield* result;
-          // One error, naming what was already removed, so --json prints one document.
           const error = Option.getOrUndefined(Exit.findErrorOption(result));
           return yield* failure(
             error?.code ?? "request_failed",
@@ -131,6 +126,5 @@ export const hatch = Command.make(
     }),
 );
 
-// The turn the next steer or interrupt is aimed at: one past the last ended turn.
 const turnFrom = (log: readonly { kind: string }[]) =>
   String(log.filter((event) => event.kind === "turn.ended").length);

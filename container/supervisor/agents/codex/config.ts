@@ -1,19 +1,12 @@
 import { Effect, FileSystem } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { Config } from "../../runner.js";
 import { AgentError } from "../../runner.js";
 import { keepsDisk, notTmpfs, onTmpfs } from "../../place.js";
 import { processEnv, runDir } from "../../runtime.js";
 
-// JSON basic-string escapes also satisfy TOML except for DEL (U+007F).
-// The agent schema rejects lone surrogates in every string written to this config.
 export const toml = (value: string) => JSON.stringify(value).replace(/\u007f/g, "\\u007f");
-// What Scotty saves and installs: rollouts and instructions, on the disk.
 export const codexHome = () => processEnv("SCOTTY_CODEX_HOME") || "/home/scotty/.codex";
-// Where a place keeps the disk, Codex's CODEX_HOME is on the tmpfs, so config.toml with the
-// access token, and anything Codex rewrites beside it, never rests on a paused disk. Its sessions
-// and instructions link back to codexHome, so rollouts stay on the disk. On Cloudflare the disk
-// goes with the container, and CODEX_HOME is codexHome itself.
 const runtimeHome = `${runDir}/codex`;
 const kept = ["sessions", "AGENTS.md"];
 
@@ -35,7 +28,6 @@ const writeConfig = (config: Extract<Config, { kind: "codex"; token: string }>, 
           (config.mcp ?? [])
             .map((server) => `\n[mcp_servers.${toml(server.name)}]\nurl = ${toml(server.url)}\n`)
             .join("") +
-          // Owner-switched-off skills are installed (other skills link into them) but hidden.
           (config.skillsOff ?? [])
             .map((name) => `\n[[skills.config]]\nname = ${toml(name)}\nenabled = false\n`)
             .join(""),

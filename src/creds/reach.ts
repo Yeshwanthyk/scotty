@@ -1,7 +1,7 @@
-import type * as Cloudflare from "alchemy/Cloudflare";
+import type * as Cloudflare from "@alchemy.run/cloudflare";
 import { Effect, Option, Schema } from "effect";
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import type CredsObject from "./object.js";
 import { ToolPolicy } from "./connections.js";
 
@@ -76,7 +76,6 @@ const filterMessage = (rpc: typeof Rpc.Type, policy: typeof ToolPolicy.Type) => 
   };
 };
 
-// SSE callbacks are a stream host boundary. Keep event IDs and comments; rewrite only MCP data.
 const mcpStream = (
   body: ReadableStream<Uint8Array<ArrayBuffer>>,
   message: (value: typeof Rpc.Type) => unknown,
@@ -119,7 +118,6 @@ const mcpStream = (
           }
         },
         flush() {
-          // SSE dispatches only complete events. An incomplete tail must not bypass filtering.
           buffer = "";
           lines = [];
         },
