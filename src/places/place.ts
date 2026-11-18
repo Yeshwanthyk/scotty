@@ -104,4 +104,9 @@ export interface Place {
    * when the machine can't be watched yet); the inner one waits for the exit.
    */
   readonly watch?: (handle: Handle) => Effect.Effect<Effect.Effect<Exit>, PlaceFailed>;
+  /**
+   * True where the place can't intercept the machine's requests to `github.internal` and the
+   * rest; the supervisor then sends them to the Session DO over its own socket.
+   */
+  readonly tunnel: boolean;
 }

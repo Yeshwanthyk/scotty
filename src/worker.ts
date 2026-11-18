@@ -6,13 +6,7 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { fireRun } from "./automations/fire.js";
 import CredsObject from "./creds/object.js";
-import {
-  egress,
-  egressPrefix,
-  egressRoute,
-  LoopbackProps,
-  loopbackTarget,
-} from "./egress/handler.js";
+import { egress, LoopbackProps, loopbackTarget } from "./egress/handler.js";
 import { hookHandler, hookPath } from "./hooks/handler.js";
 import { apiHandler, hatchPort } from "./http/api.js";
 import { mcpHandler } from "./mcp/server.js";
@@ -113,7 +107,6 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
           request.method !== "HEAD"
         )
           return HttpServerResponse.text("Forbidden", { status: 403 });
-        if (url.pathname.startsWith(egressPrefix)) return yield* egressRoute(request, upstreams);
         if (url.pathname === "/mcp") {
           if (foreign) return HttpServerResponse.text("Forbidden", { status: 403 });
           return yield* mcpHandler(request, sessions, credentials, bucket, hatchBase).pipe(

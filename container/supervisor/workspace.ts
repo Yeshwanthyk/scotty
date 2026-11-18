@@ -2,8 +2,8 @@ import { Clock, Effect, Fiber, FileSystem, Schedule, Schema, Stream } from "effe
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { fixtureRepo, Workspace } from "../../protocol/supervisor.js";
 import type { Agent } from "./agents/agent.js";
-import { notTmpfs, onTmpfs } from "./place.js";
-import { processEnv, runDir } from "./runtime.js";
+import { tunnelPort } from "../../protocol/tunnel.js";
+import { processEnv } from "./runtime.js";
 
 export class WorkspaceError extends Schema.TaggedError<WorkspaceError>()("WorkspaceError", {
   message: Schema.String,
@@ -154,28 +154,7 @@ export const hasState = (agent: Agent, thread: string) => {
   );
 };
 
-export type Egress = { readonly url: string; readonly token: string };
-const egressUrl = /^https:\/\/[A-Za-z0-9.:/_~%-]+$/;
-const quoted = (value: string) => `"${value.replace(/[\\"]/g, (character) => `\\${character}`)}"`;
-
-const routeThroughEgress = (egress: Egress) =>
-  Effect.gen(function* () {
-    const url = egress.url.replace(/\/+$/, "");
-    if (!egressUrl.test(url)) return yield* new WorkspaceError({ message: "invalid egress URL" });
-    if (!(yield* onTmpfs)) return yield* new WorkspaceError({ message: notTmpfs });
-    const fs = yield* FileSystem.FileSystem;
-    const file = `${runDir}/gitconfig`;
-    yield* fs
-      .writeFileString(
-        file,
-        `[url ${quoted(`${url}/github.internal/api/git/`)}]\n` +
-          `\tinsteadOf = https://github.com/\n\tinsteadOf = http://github.internal/api/git/\n` +
-          `[http ${quoted(`${url}/`)}]\n\textraHeader = ${quoted(`Authorization: Bearer ${egress.token}`)}\n`,
-        { mode: 0o600 },
-      )
-      .pipe(Effect.mapError(() => failure()));
-    return file;
-  });
+export const tunnelBase = `http://127.0.0.1:${tunnelPort}`;
 
 export const prepareWorkspace = (
   repo: string,
@@ -185,7 +164,7 @@ export const prepareWorkspace = (
   agent: Agent,
   resume: { readonly commit: string } | undefined,
   disk: Workspace | undefined,
-  egress: Egress | undefined,
+  tunnel: boolean,
 ) =>
   Effect.gen(function* () {
     const started = yield* Clock.currentTimeMillis;
@@ -200,9 +179,8 @@ export const prepareWorkspace = (
     yield* run(["git", "check-ref-format", "--branch", branch], root);
     const dir = `${root}/repo`;
     const config = {
-      ...(egress === undefined
-        ? { "url.http://github.internal/api/git/.insteadOf": "https://github.com/" }
-        : { "include.path": yield* routeThroughEgress(egress) }),
+      [`url.${tunnel ? `${tunnelBase}/github.internal` : "http://github.internal"}/api/git/.insteadOf`]:
+        "https://github.com/",
       "user.name": git.name,
       "user.email": git.email,
     };

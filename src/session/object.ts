@@ -47,6 +47,9 @@ import { openLog, type Draft } from "./log.js";
 import { live } from "./state.js";
 import { sessionStats } from "./stats.js";
 import { SupervisorLink, type SocketInput } from "./supervisor-link.js";
+import type { TunnelRequest } from "../../protocol/tunnel.js";
+import { tunnelProps } from "../egress/handler.js";
+import { isLoopbackFetch } from "../loopback.js";
 import { callerProof, hex, sessionKey } from "./supervisor-auth.js";
 import { supervisorEvent } from "./supervisor-events.js";
 import { conversationView, sessionView, turnOutcome } from "./view.js";
@@ -559,6 +562,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 instructions,
                 skills: installed.flat(),
                 ...(restored && action.resume !== undefined ? { resume: action.resume } : {}),
+                ...(where().tunnel ? { tunnel: true } : {}),
               };
               if (current(action.gen)) link.send(message);
               return;
@@ -694,8 +698,38 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           const event = yield* supervisorEvent(message);
           if (event) yield* dispatch(yield* append(event, "supervisor"));
         });
-      link = new SupervisorLink((input) =>
-        onSocket(input).pipe(Effect.orDie, Effect.provide(context)),
+      const tunneled = (
+        head: typeof TunnelRequest.Type,
+        body: ReadableStream<Uint8Array> | null,
+        signal: AbortSignal,
+      ) =>
+        Effect.gen(function* () {
+          const created = log.state.created;
+          if (created === undefined || !live(log.state)) return undefined;
+          const connections = (startConnections?.items ?? [])
+            .filter((connection) => connection.kind !== "inbound")
+            .map((connection) => connection.name);
+          const props = tunnelProps(head.host, connections);
+          const loopback: unknown = Reflect.get(storage.raw.exports, "default");
+          if (props === undefined || !isLoopbackFetch(loopback)) return undefined;
+          const scheme = head.host === "api.github.com" ? "https" : "http";
+          const fetcher = loopback({ props: { session: id(), repo: created.repo, ...props } });
+          const headers = new Headers();
+          for (const [name, value] of head.headers) headers.append(name, value);
+          headers.set("host", head.host);
+          return yield* Effect.tryPromise(() =>
+            fetcher.fetch(`${scheme}://${head.host}${head.path}`, {
+              method: head.method,
+              headers,
+              body,
+              signal,
+              redirect: "manual",
+            }),
+          );
+        }).pipe(Effect.orElseSucceed(() => new Response("Bad gateway\n", { status: 502 })));
+      link = new SupervisorLink(
+        (input) => onSocket(input).pipe(Effect.orDie, Effect.provide(context)),
+        tunneled,
       );
       if (
         log.state.gen !== undefined &&

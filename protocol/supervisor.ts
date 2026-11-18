@@ -101,7 +101,7 @@ export const ToSupervisor = Schema.Union([
         commit: Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/)),
       }),
     ),
-    egress: Schema.optionalKey(Schema.Struct({ url: Schema.String, token: credentialString })),
+    tunnel: Schema.optionalKey(Schema.Literal(true)),
   }),
   Schema.Struct({
     ...envelope,

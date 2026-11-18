@@ -16,6 +16,7 @@ import {
   saveWorkspace,
   storeSave,
   storeSkills,
+  tunnelBase,
   WorkspaceError,
   writeMarker,
 } from "./workspace.js";
@@ -69,7 +70,18 @@ export class Controller {
       }
       this.gen = message.gen;
       this.startState = { status: "inflight" };
-      const agent = makeAgent(message.agent);
+      const tunnel = message.tunnel === true;
+      const agent = makeAgent(
+        tunnel
+          ? {
+              ...message.agent,
+              mcp: message.agent.mcp?.map((server) => ({
+                ...server,
+                url: server.url.replace(/^http:\/\//, `${tunnelBase}/`),
+              })),
+            }
+          : message.agent,
+      );
       this.agent = agent;
       const outcome = yield* Effect.gen({ self: this }, function* () {
         const marker = message.resume === undefined ? undefined : yield* readMarker;
@@ -88,7 +100,7 @@ export class Controller {
           agent,
           message.resume,
           disk,
-          message.egress,
+          tunnel,
         );
         const gone = (detail: string) =>
           new AgentError({ code: threadGone, message: `can't resume the thread: ${detail}` });
@@ -117,7 +129,10 @@ export class Controller {
           Scope.provide(scope),
         );
         const ready = yield* runner
-          .start({ SCOTTY_HATCH: message.hatch }, message.resume?.threadId)
+          .start(
+            { SCOTTY_HATCH: message.hatch, ...(tunnel ? { SCOTTY_TUNNEL: tunnelBase } : {}) },
+            message.resume?.threadId,
+          )
           .pipe(
             Effect.mapError((error) =>
               disk !== undefined && error.unresumable === true ? gone(error.message) : error,

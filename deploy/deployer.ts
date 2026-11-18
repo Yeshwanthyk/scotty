@@ -417,12 +417,6 @@ export const deployStage = (
     );
     yield* ensureAccessApp(
       accountId,
-      name.egress,
-      [{ type: "public", uri: `${host}/egress/*` }],
-      [{ name: "session egress", decision: "bypass", include: [{ everyone: {} }] }],
-    );
-    yield* ensureAccessApp(
-      accountId,
       name.mcp,
       [{ type: "public", uri: `${host}/mcp` }],
       policies,

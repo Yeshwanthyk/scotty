@@ -7,7 +7,9 @@ import {
   ToSupervisor,
   type ToSupervisorMessage,
 } from "../../protocol/supervisor.js";
+import { tunnelPort } from "../../protocol/tunnel.js";
 import { authorized, loadKey } from "./caller.js";
+import { mountTmpfs } from "./place.js";
 import { exit, onTerminate, processEnv } from "./runtime.js";
 import {
   closeTerminal,
@@ -17,12 +19,13 @@ import {
   type Size,
   terminalInput,
 } from "./terminal.js";
+import { Tunnel } from "./tunnel.js";
 import { acknowledge, dial, emit, initialWire, type Output } from "./wire.js";
 import { readMarker, type WorkspaceError } from "./workspace.js";
 
 interface Peer {
   data: typeof Dial.Type & { terminal?: Size };
-  send(message: string | Uint8Array): void;
+  send(message: string | Uint8Array): number;
   close(): void;
 }
 interface Server {
@@ -31,8 +34,9 @@ interface Server {
 declare const Bun: {
   serve(options: {
     port: number;
+    hostname?: string;
     fetch(request: Request, server: Server): Response | Promise<Response> | undefined;
-    websocket: {
+    websocket?: {
       open(peer: Peer): void;
       message(peer: Peer, data: string | Uint8Array): void;
       close(peer: Peer): void;
@@ -77,7 +81,9 @@ export const serve = async (
   host: Host,
 ) => {
   const { key, workspace } = await Effect.runPromise(
-    Effect.all({ key: loadKey, workspace: readMarker }).pipe(Effect.provide(BunServices.layer)),
+    Effect.all({ key: loadKey, workspace: readMarker, tmpfs: mountTmpfs }).pipe(
+      Effect.provide(BunServices.layer),
+    ),
   );
   let stopping = false;
   onTerminate(() => {
@@ -91,6 +97,11 @@ export const serve = async (
   const queue = Effect.runSync(Queue.unbounded<Event>());
   let wire = initialWire(crypto.randomUUID(), workspace);
   let peer: Peer | undefined;
+  const tunnel = new Tunnel();
+  const attach = (next: Peer | undefined) => {
+    peer = next;
+    tunnel.attach(next === undefined ? undefined : (frame) => next.send(frame) !== 0);
+  };
   const enqueue = (event: Event) => {
     Queue.offerUnsafe(queue, event);
   };
@@ -98,7 +109,7 @@ export const serve = async (
     try {
       socket.send(JSON.stringify(frame));
     } catch {
-      if (peer === socket) peer = undefined;
+      if (peer === socket) attach(undefined);
     }
   };
   const output = (value: Output, gen?: number) => {
@@ -139,13 +150,13 @@ export const serve = async (
           return Effect.void;
         }
         peer?.close();
-        peer = event.peer;
+        attach(event.peer);
         wire = result.wire;
         for (const frame of result.messages) transmit(event.peer, frame);
         return Effect.void;
       }
       case "close":
-        if (peer === event.peer) peer = undefined;
+        if (peer === event.peer) attach(undefined);
         return Effect.void;
       case "output":
         output(event.output, event.gen);
@@ -308,13 +319,20 @@ export const serve = async (
       },
       message(socket, data) {
         if (socket.data.terminal) terminalInput(socket, data);
-        else enqueue({ type: "input", peer: socket, data });
+        else if (typeof data !== "string") {
+          if (socket === peer) tunnel.receive(data);
+        } else enqueue({ type: "input", peer: socket, data });
       },
       close(socket) {
         if (socket.data.terminal) closeTerminal(socket);
         else enqueue({ type: "close", peer: socket });
       },
     },
+  });
+  Bun.serve({
+    port: tunnelPort,
+    hostname: "127.0.0.1",
+    fetch: (request) => tunnel.fetch(request),
   });
   listeningAt = Date.now();
   listeningAgeMs = uptime() * 1000;
