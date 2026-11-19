@@ -644,12 +644,16 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               if (action.kind === "start") yield* Effect.logError("start failed", cause);
               if (action.kind === "create" && log.state.place === undefined) {
                 yield* Effect.logError("create failed", cause);
+                const limited = Option.exists(
+                  Cause.findErrorOption(cause),
+                  (error) => error instanceof PlaceFailed && error.limited === true,
+                );
                 yield* dispatch(
                   yield* append(
                     {
                       kind: "failed",
                       phase: "container",
-                      code: "container_start",
+                      code: limited ? "place_limited" : "container_start",
                       retryable: true,
                     },
                     "session",

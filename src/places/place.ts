@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 
-export const PlaceKind = Schema.Literals(["cloudflare", "daytona"]);
+export const PlaceKind = Schema.Literals(["cloudflare", "daytona", "boat"]);
 export const defaultPlace: typeof PlaceKind.Type = "cloudflare";
 export const Size = Schema.Literals(["standard-1", "standard-2", "standard-3", "standard-4"]);
 export const defaultSize: typeof Size.Type = "standard-1";
@@ -9,7 +9,8 @@ export const defaultSize: typeof Size.Type = "standard-1";
  * What is fixed about each place: the sizes it makes, smallest first; whether the supervisor
  * reaches the Worker through its own socket because the place can't intercept the machine's
  * requests to `github.internal` and the rest; and, for a place that acts with the owner's API
- * key, where `scotty login <place>` finds that key and what it looks like.
+ * key, where `scotty login <place>` finds that key and what it looks like; and, for a place
+ * whose stop and start are cheaper than an idle machine, how long a session idles before it sleeps.
  */
 export const placeCatalog = {
   cloudflare: { sizes: Size.literals, tunnel: false },
@@ -18,12 +19,19 @@ export const placeCatalog = {
     tunnel: true,
     key: { env: "DAYTONA_API_KEY", pattern: /^dtn_[A-Za-z0-9_-]{20,200}$/, site: "app.daytona.io" },
   },
+  boat: {
+    sizes: ["standard-2", "standard-4"],
+    tunnel: true,
+    key: { env: "BOAT_API_KEY", pattern: /^boat_[A-Za-z0-9_-]{16,200}$/, site: "boat.dev" },
+    idleAfter: 180_000,
+  },
 } as const satisfies Record<
   typeof PlaceKind.Type,
   {
     readonly sizes: readonly (typeof Size.Type)[];
     readonly tunnel: boolean;
     readonly key?: { readonly env: string; readonly pattern: RegExp; readonly site: string };
+    readonly idleAfter?: number;
   }
 >;
 type Catalog = typeof placeCatalog;
@@ -31,7 +39,10 @@ type WithKey = {
   [K in keyof Catalog]: Catalog[K] extends { readonly key: object } ? K : never;
 }[keyof Catalog];
 /** The places with a `key` in the catalog. */
-export const KeyedPlace = Schema.Literals(["daytona"] as const satisfies readonly WithKey[]);
+export const KeyedPlace = Schema.Literals([
+  "daytona",
+  "boat",
+] as const satisfies readonly WithKey[]);
 
 /** The largest size `place` makes that is no bigger than `size`. */
 export const fitSize: (place: typeof PlaceKind.Type, size: typeof Size.Type) => typeof Size.Type = (
@@ -65,7 +76,14 @@ export const hourlyRate: (size: typeof Size.Type) => number = (size) => {
 
 export class PlaceFailed extends Schema.TaggedError<PlaceFailed>()("PlaceFailed", {
   op: Schema.Literals(["create", "pause", "resume", "remove", "status", "watch", "port"]),
+  limited: Schema.optional(Schema.Boolean),
 }) {}
+
+/** How long a session at `place` idles before it sleeps, unless the session sets its own. */
+export const placeIdleAfter: (place: typeof PlaceKind.Type) => number | undefined = (place) => {
+  const entry = placeCatalog[place];
+  return "idleAfter" in entry ? entry.idleAfter : undefined;
+};
 
 export class PortFailed extends Schema.TaggedError<PortFailed>()("PortFailed", {}) {}
 

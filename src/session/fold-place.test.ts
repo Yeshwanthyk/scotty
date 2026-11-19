@@ -285,6 +285,13 @@ describe("place lifecycle", () => {
     expect(command(woke, sized)).toEqual({ kind: "resume", gen: 2, handle });
   });
 
+  it("fits a size up to the smallest one a place makes when none is smaller", () => {
+    const small = run([make(1, "created", { ...created, place: "boat", size: "standard-1" })]);
+    expect(small.size).toBe("standard-2");
+    const between = run([make(1, "created", { ...created, place: "boat", size: "standard-3" })]);
+    expect(between.size).toBe("standard-2");
+  });
+
   it("stamps how long each step of a wake took", () => {
     const state = run(
       [

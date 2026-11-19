@@ -5,7 +5,12 @@ import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import { fixtureRepo } from "../../protocol/supervisor.js";
 import type { AgentKind, Origin } from "../session/events.js";
-import { defaultPlace, type PlaceKind, type Size } from "../places/place.js";
+import { defaultPlace, type PlaceKind, placeIdleAfter, type Size } from "../places/place.js";
+
+const idleFor = (place: typeof PlaceKind.Type, given: number | undefined) => {
+  const idleAfter = given ?? placeIdleAfter(place);
+  return idleAfter === undefined ? {} : { idleAfter };
+};
 
 export const githubHint = "scotty login github";
 export const Repo = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/));
@@ -112,7 +117,7 @@ export function startSession(
         image: "default",
         place: input.place ?? defaultPlace,
         ...(input.scripted === true ? { scripted: true } : {}),
-        ...(input.idleAfter === undefined ? {} : { idleAfter: input.idleAfter }),
+        ...idleFor(input.place ?? defaultPlace, input.idleAfter),
         ...(input.origin === undefined ? {} : { origin: input.origin }),
       },
     });
