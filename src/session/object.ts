@@ -1,9 +1,10 @@
 import { sameImages, type PromptImage } from "../../protocol/prompt.js";
-import { cloudflarePlace } from "../places/cloudflare.js";
+import { makePlaces } from "../places/index.js";
 import {
   defaultPlace,
   type Exit as MachineExit,
-  type Place,
+  PlaceFailed,
+  placeCatalog,
   type PlaceKind,
   type Size,
 } from "../places/place.js";
@@ -47,6 +48,9 @@ import { openLog, type Draft } from "./log.js";
 import { live } from "./state.js";
 import { sessionStats } from "./stats.js";
 import { SupervisorLink, type SocketInput } from "./supervisor-link.js";
+import type { TunnelRequest } from "../../protocol/tunnel.js";
+import { tunnelProps } from "../egress/handler.js";
+import { isLoopbackFetch } from "../loopback.js";
 import { callerProof, hex, sessionKey } from "./supervisor-auth.js";
 import { supervisorEvent } from "./supervisor-events.js";
 import { conversationView, sessionView, turnOutcome } from "./view.js";
@@ -102,16 +106,31 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
       const id = () => log.state.created?.branch.slice("scotty/".length) ?? "";
       const context = yield* Effect.context<RuntimeContext | Cloudflare.DurableObjectState>();
 
-      const places = {
-        cloudflare: cloudflarePlace(container, storage.raw.exports),
-      } satisfies Record<typeof PlaceKind.Type, Place>;
-      const where = () => places[log.state.created?.place ?? defaultPlace];
+      const placeOf = makePlaces({
+        container,
+        exports: storage.raw.exports,
+        env,
+        key: (kind, op) =>
+          credentials
+            .getByName("owner")
+            .placeKey(kind)
+            .pipe(
+              Effect.tapError(() =>
+                Effect.logError(`No ${kind} API key: run scotty login ${kind}`),
+              ),
+              Effect.mapError(() => new PlaceFailed({ op })),
+            ),
+      });
+      const kind = () => log.state.created?.place ?? defaultPlace;
+      const where = () => placeOf(kind());
       class NoMachine extends Schema.TaggedError<NoMachine>()("NoMachine", {}) {}
       const port = (n: number) =>
         Effect.gen(function* () {
           const handle = log.state.place?.handle;
           if (handle === undefined) return yield* new NoMachine();
-          return where().port(handle, n);
+          return yield* where()
+            .port(handle, n)
+            .pipe(Effect.mapError(() => new NoMachine()));
         });
       let key: { session: string; bytes: Uint8Array<ArrayBuffer> } | undefined;
       const keyBytes = Effect.gen(function* () {
@@ -164,10 +183,9 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         Effect.gen(function* () {
           const target = yield* port(7000);
           const headers = yield* auth(gen);
-          return yield* Effect.tryPromise({
-            try: () => target.fetch(`http://container${path}`, { ...init, headers }),
-            catch: () => new SupervisorFailure({ path }),
-          });
+          return yield* target
+            .fetch(`http://container${path}`, { ...init, headers })
+            .pipe(Effect.mapError(() => new SupervisorFailure({ path })));
         }).pipe(
           Effect.catchTag("NoMachine", () => Effect.fail(new SupervisorFailure({ path }))),
           Effect.flatMap((response) =>
@@ -275,13 +293,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               yield* append({ kind: "container.dial.attempt", gen, attempt }, "session");
             const started = Date.now();
             yield* link
-              .dial(
-                () => target,
-                gen,
-                0,
-                headers,
-                () => current(gen),
-              )
+              .dial(target, gen, 0, headers, () => current(gen))
               .pipe(
                 Effect.timeout("10 seconds"),
                 Effect.onExit((exit) =>
@@ -354,10 +366,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           switch (action.kind) {
             case "create": {
               if (!current(action.gen) || log.state.place !== undefined) return;
-              if (action.remove !== undefined)
-                yield* where()
-                  .remove(action.remove)
-                  .pipe(Effect.ignoreCause({ log: "Warn", message: "remove failed" }));
+              if (action.remove !== undefined) yield* where().remove(action.remove);
               if (!(yield* claimSlot(action.gen))) return;
               const connections = (yield* connectionsFor(action.gen))
                 .filter((connection) => connection.kind !== "inbound")
@@ -424,13 +433,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               const headers = yield* auth(action.gen);
               const target = yield* port(7000);
               yield* link
-                .dial(
-                  () => target,
-                  action.gen,
-                  action.after,
-                  headers,
-                  () => current(action.gen),
-                )
+                .dial(target, action.gen, action.after, headers, () => current(action.gen))
                 .pipe(Effect.timeout("10 seconds"));
               yield* watch(action.gen);
               return;
@@ -559,6 +562,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 instructions,
                 skills: installed.flat(),
                 ...(restored && action.resume !== undefined ? { resume: action.resume } : {}),
+                ...(placeCatalog[kind()].tunnel ? { tunnel: true } : {}),
               };
               if (current(action.gen)) link.send(message);
               return;
@@ -694,8 +698,37 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           const event = yield* supervisorEvent(message);
           if (event) yield* dispatch(yield* append(event, "supervisor"));
         });
-      link = new SupervisorLink((input) =>
-        onSocket(input).pipe(Effect.orDie, Effect.provide(context)),
+      const tunneled = (
+        head: typeof TunnelRequest.Type,
+        body: ReadableStream<Uint8Array> | null,
+        signal: AbortSignal,
+      ) =>
+        Effect.gen(function* () {
+          const created = log.state.created;
+          if (created === undefined || !live(log.state)) return undefined;
+          const connections = (startConnections?.items ?? [])
+            .filter((connection) => connection.kind !== "inbound")
+            .map((connection) => connection.name);
+          const props = tunnelProps(head.host, connections);
+          const loopback: unknown = Reflect.get(storage.raw.exports, "default");
+          if (props === undefined || !isLoopbackFetch(loopback)) return undefined;
+          const fetcher = loopback({ props: { session: id(), repo: created.repo, ...props } });
+          const headers = new Headers();
+          for (const [name, value] of head.headers) headers.append(name, value);
+          headers.set("host", head.host);
+          return yield* Effect.tryPromise(() =>
+            fetcher.fetch(`http://${head.host}${head.path}`, {
+              method: head.method,
+              headers,
+              body,
+              signal,
+              redirect: "manual",
+            }),
+          );
+        }).pipe(Effect.orElseSucceed(() => new Response("Bad gateway\n", { status: 502 })));
+      link = new SupervisorLink(
+        (input) => onSocket(input).pipe(Effect.orDie, Effect.provide(context)),
+        tunneled,
       );
       if (
         log.state.gen !== undefined &&
@@ -915,9 +948,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             const headers = new Headers(request.headers);
             for (const [name, value] of Object.entries(yield* auth(gen))) headers.set(name, value);
             return yield* port(7000).pipe(
-              Effect.flatMap((terminal) =>
-                Effect.tryPromise(() => terminal.fetch(target, { headers })),
-              ),
+              Effect.flatMap((terminal) => terminal.fetch(target, { headers })),
               Effect.map((response) => HttpServerResponse.raw(response)),
               Effect.orElseSucceed(() => unavailable),
             );
@@ -933,7 +964,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             redirect: "manual" as const,
           };
           return yield* port(number).pipe(
-            Effect.flatMap((preview) => Effect.tryPromise(() => preview.fetch(target, init))),
+            Effect.flatMap((preview) => preview.fetch(target, init)),
             Effect.map((response) => HttpServerResponse.raw(response)),
             Effect.orElseSucceed(() =>
               HttpServerResponse.text(`Nothing is answering on port ${number} yet`, {

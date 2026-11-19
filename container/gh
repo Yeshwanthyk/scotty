@@ -1,14 +1,21 @@
 #!/bin/sh
 # gh reaches api.github.com through Cloudflare's HTTPS interception, which signs with the CA
-# below; the Worker replaces this placeholder with the owner's token and refuses writes that move
-# a branch outside scotty/*. Git's origin is rewritten to github.internal, which gh doesn't know
-# as a GitHub host, so the repository is read from it.
+# below, or, where the place has no interception, through the supervisor's tunnel socket, which
+# gh dials in place of the host. Either way the Worker replaces the placeholder with the owner's
+# token and refuses writes that move a branch outside scotty/*. Git's origin is rewritten to
+# github.internal, which gh doesn't know as a GitHub host, so the repository is read from it.
 export GH_TOKEN=scotty-placeholder
 export SSL_CERT_DIR="/etc/ssl/certs:/etc/cloudflare/certs"
+if [ -n "${SCOTTY_TUNNEL_SOCKET:-}" ]; then
+  config="${TMPDIR:-/tmp}/scotty-gh"
+  mkdir -p "$config"
+  printf 'http_unix_socket: %s\n' "$SCOTTY_TUNNEL_SOCKET" >"$config/config.yml"
+  export GH_CONFIG_DIR="$config"
+fi
 if [ -z "${GH_REPO:-}" ]; then
   origin=$(git remote get-url origin 2>/dev/null)
   case $origin in
-  http://github.internal/api/git/* | https://*/github.internal/api/git/*)
+  http://github.internal/api/git/* | http://127.0.0.1:*/github.internal/api/git/*)
     repo=${origin#*github.internal/api/git/}
     export GH_REPO="${repo%.git}"
     ;;

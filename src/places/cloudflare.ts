@@ -1,40 +1,22 @@
 import type * as cf from "@cloudflare/workers-types";
 import { Effect, Option, Schema } from "effect";
-import { PlaceFailed, type Exit, type Place, type Port } from "./place.js";
+import { PlaceFailed, PortFailed, upgrade, type Exit, type Place, type Port } from "./place.js";
 
 import { isLoopback } from "../loopback.js";
 
 const ExitStatus = Schema.Struct({ exitCode: Schema.Int });
 const inactivityTimeout = 900_000;
 
-const accepted: (response: object) => WebSocket | undefined = function accepted(response) {
-  const candidate: unknown = Reflect.get(response, "webSocket");
-  if (
-    !(candidate instanceof WebSocket) ||
-    !("accept" in candidate) ||
-    typeof candidate.accept !== "function"
-  )
-    return undefined;
-  candidate.accept();
-  return candidate;
-};
-
 const tcpPort: (container: cf.Container, port: number) => Port = (container, port) => ({
-  fetch: (url, init) => container.getTcpPort(port).fetch(url, init),
-  socket: (url, headers, signal) => {
-    const pending = container
-      .getTcpPort(port)
-      .fetch(url, { headers: { ...headers, Upgrade: "websocket" } });
-    signal.addEventListener("abort", () =>
-      pending.then(
-        (late) => {
-          accepted(late)?.close();
-        },
-        () => undefined,
-      ),
-    );
-    return pending.then((response) => (signal.aborted ? undefined : accepted(response)));
-  },
+  fetch: (url, init) =>
+    Effect.tryPromise({
+      try: () => container.getTcpPort(port).fetch(url, init),
+      catch: () => new PortFailed(),
+    }),
+  socket: (url, headers) =>
+    upgrade(() =>
+      container.getTcpPort(port).fetch(url, { headers: { ...headers, Upgrade: "websocket" } }),
+    ).pipe(Effect.map((answer) => answer.socket)),
 });
 
 /**
@@ -96,7 +78,7 @@ export const cloudflarePlace: (container: cf.Container, exports: object) => Plac
     resume: () => Effect.succeed("gone" as const),
     remove: () => destroy("remove"),
     status: () => Effect.sync(() => (container.running ? "running" : "gone")),
-    port: (_handle, port) => tcpPort(container, port),
+    port: (_handle, port) => Effect.succeed(tcpPort(container, port)),
     watch: () =>
       Effect.tryPromise({
         try: () => container.setInactivityTimeout(inactivityTimeout),

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // scotty-attach <path> [caption]: shows an image or video in the user's chat, in this turn.
 // The Session DO routes files.internal to the Worker, which stores the file; no token here.
+// Outside Cloudflare, SCOTTY_TUNNEL is the supervisor's local tunnel to the Session DO.
 const types = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -23,7 +24,8 @@ async function main([path, caption]) {
   };
   if (caption) headers["x-scotty-caption"] = encodeURIComponent(caption);
   const body = await readFile(path);
-  const response = await fetch("http://files.internal/", { method: "PUT", headers, body });
+  const base = process.env.SCOTTY_TUNNEL ? `${process.env.SCOTTY_TUNNEL}/` : "http://";
+  const response = await fetch(`${base}files.internal/`, { method: "PUT", headers, body });
   if (!response.ok) throw new Error(`HTTP ${response.status}: ${(await response.text()).trim()}`);
   console.log(`Attached: ${name}`);
 }

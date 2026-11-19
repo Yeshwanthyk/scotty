@@ -8,11 +8,12 @@ import {
   Conversation,
   Created,
   failure,
+  Removed,
   Reply,
   target,
   View,
 } from "../cli/client.js";
-import { prompt, sessionAgent } from "./lib/agent.js";
+import { place, prompt, sessionAgent } from "./lib/agent.js";
 import { Log, waiter } from "./lib/wait.js";
 import { githubEvents } from "./github-events.js";
 
@@ -52,8 +53,9 @@ const program = Effect.gen(function* () {
     key: crypto.randomUUID(),
     body: {
       ...sessionAgent,
-      title: "e2e github",
+      title: `e2e github (${place})`,
       repo,
+      place,
       prompt: prompt(
         `Run exactly: \`${push}\`, then reply with only the word done.`,
         `run ${push}\nsay done`,
@@ -154,8 +156,18 @@ const program = Effect.gen(function* () {
     const deleted = yield* gh(["-X", "DELETE", `repos/${repo}/git/refs/heads/${name}`]);
     yield* check(deleted.ok, `Could not delete ${name}`);
   }
+  const pauses = (log: typeof Log.Type) =>
+    log.filter((e) => e.kind === "place.paused" || e.kind === "place.gone").length;
+  const before = pauses(yield* request(`${prefix}/log`, Log));
   yield* request(`${prefix}/stop`, View, { method: "POST" });
-  console.log(`Deleted ${branch} and ${base}; session stopped`);
+  yield* poll(
+    () => request(`${prefix}/log`, Log),
+    (log) => pauses(log) > before,
+    { stopped: "expected" },
+  );
+  const removed = yield* request(prefix, Removed, { method: "DELETE" });
+  yield* check(removed.removed, "Session was not removed");
+  console.log(`Deleted ${branch} and ${base}; session removed`);
 });
 
 Effect.runPromise(program).catch((error: unknown) => {

@@ -20,6 +20,7 @@ import {
   defaultCodexSettings,
 } from "../src/session/agents/agent-settings.js";
 import { copyImage } from "./image.ts";
+import { keyedDeploys } from "./places.ts";
 
 export const compatibilityDate = "2026-09-01";
 
@@ -214,6 +215,14 @@ export const deployStage = (
       ),
     );
 
+    const source = image ?? release.image;
+    const placeBindings = yield* Effect.forEach(keyedDeploys(), (place) =>
+      say(`Preparing ${place.name}`).pipe(
+        Effect.andThen(place.prepare(place.key, stage, source)),
+        Effect.mapError((error) => new DeployError({ message: error.message })),
+      ),
+    );
+
     yield* say("Preparing the container image");
     const prepared = yield* cloudflare(
       `/accounts/${accountId}/containers/image-preparations`,
@@ -297,6 +306,9 @@ export const deployStage = (
         text("SCOTTY_CLAUDE_MODEL", claude.model),
         text("SCOTTY_CLAUDE_EFFORT", claude.effort),
         text("SCOTTY_MAX_RUNNING", String(config.maxRunning ?? 20)),
+        ...placeBindings.flatMap((bindings) =>
+          Object.entries(bindings).map(([key, value]) => text(key, value)),
+        ),
       ],
       containers: [{ class_name: "SessionObject", images: { session: copied } }],
       ...(migrated
@@ -414,12 +426,6 @@ export const deployStage = (
       name.hooks,
       [{ type: "public", uri: `${host}/hooks/*` }],
       [{ name: "signed webhooks", decision: "bypass", include: [{ everyone: {} }] }],
-    );
-    yield* ensureAccessApp(
-      accountId,
-      name.egress,
-      [{ type: "public", uri: `${host}/egress/*` }],
-      [{ name: "session egress", decision: "bypass", include: [{ everyone: {} }] }],
     );
     yield* ensureAccessApp(
       accountId,
@@ -575,6 +581,13 @@ export const removeStage = (config: Config, progress: (text: string) => void) =>
     yield* say("Removing the preview address");
     for (const record of yield* wildcardRecords(zoneId, name.wildcard))
       if (record.id) yield* Dns.deleteRecord({ zoneId, dnsRecordId: record.id });
+
+    for (const place of keyedDeploys()) {
+      yield* say(`Removing what ${place.name} holds for the stage`);
+      yield* place
+        .remove(place.key, config.stage)
+        .pipe(Effect.mapError((error) => new DeployError({ message: error.message })));
+    }
   });
 
 export const leftovers = (config: Config) =>
@@ -594,6 +607,11 @@ export const leftovers = (config: Config) =>
     const egress = yield* accessApps(accountId, name.egress);
     const mcp = yield* accessApps(accountId, name.mcp);
     const records = yield* wildcardRecords(zoneId, name.wildcard);
+    const atPlaces = yield* Effect.forEach(keyedDeploys(), (place) =>
+      place
+        .leftovers(place.key, config.stage)
+        .pipe(Effect.mapError((error) => new DeployError({ message: error.message }))),
+    );
     return [
       ...[
         ...scripts,
@@ -605,5 +623,6 @@ export const leftovers = (config: Config) =>
       ...egress.map(() => `Access app ${name.egress}`),
       ...mcp.map(() => `Access app ${name.mcp}`),
       ...records.map(() => `DNS record ${name.wildcard}`),
+      ...atPlaces.flat(),
     ];
   });

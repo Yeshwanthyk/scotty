@@ -1,6 +1,8 @@
 import { Effect, Schema } from "effect";
 import type { Port } from "../places/place.js";
 import { FromSupervisor, type ToSupervisorMessage } from "../../protocol/supervisor.js";
+import type { TunnelRequest } from "../../protocol/tunnel.js";
+import { TunnelServer } from "./tunnel.js";
 
 const Incoming = Schema.fromJsonString(FromSupervisor);
 class DialError extends Schema.TaggedError<DialError>()("DialError", {
@@ -19,7 +21,20 @@ export class SupervisorLink {
   private tail: Promise<void> = Promise.resolve();
   private outgoing = 0;
 
-  constructor(private readonly consume: (input: SocketInput) => Effect.Effect<void>) {}
+  private readonly tunnel: TunnelServer;
+
+  constructor(
+    private readonly consume: (input: SocketInput) => Effect.Effect<void>,
+    serve: (
+      head: typeof TunnelRequest.Type,
+      body: ReadableStream<Uint8Array> | null,
+      signal: AbortSignal,
+    ) => Effect.Effect<Response | undefined>,
+  ) {
+    this.tunnel = new TunnelServer((head, body, signal) =>
+      Effect.runPromise(serve(head, body, signal)),
+    );
+  }
 
   send(message: ToSupervisorMessage) {
     const socket = this.socket;
@@ -29,11 +44,10 @@ export class SupervisorLink {
 
   /**
    * `stillWanted` is checked once the socket opens; a stale dial closes it and changes nothing.
-   * `port` is called on every attempt: a port handle whose lookup failed (no instance placed yet)
-   * stays failed, and only a new one looks again. `headers` go with the upgrade.
+   * `headers` go with the upgrade.
    */
   dial(
-    port: () => Port,
+    port: Port,
     gen: number,
     after: number,
     headers: Record<string, string>,
@@ -41,18 +55,18 @@ export class SupervisorLink {
   ) {
     const enqueue = (operation: () => Effect.Effect<void, unknown>) => this.enqueue(operation);
     const consume = this.consume;
+    const tunnel = this.tunnel;
     const setSocket = (socket: WebSocket) => {
       const old = this.socket;
       this.socket = socket;
+      tunnel.reset();
       old?.close();
     };
     const isCurrent = (socket: WebSocket) => this.socket === socket;
     return Effect.gen(function* () {
-      const candidate = yield* Effect.tryPromise({
-        try: (signal) =>
-          port().socket(`http://container/?gen=${gen}&after=${after}`, headers, signal),
-        catch: () => new DialError({ message: "Supervisor not reachable" }),
-      });
+      const candidate = yield* port
+        .socket(`http://container/?gen=${gen}&after=${after}`, headers)
+        .pipe(Effect.mapError(() => new DialError({ message: "Supervisor not reachable" })));
       if (candidate === undefined) {
         return yield* new DialError({ message: "Supervisor websocket upgrade failed" });
       }
@@ -60,9 +74,14 @@ export class SupervisorLink {
         candidate.close();
         return;
       }
+      candidate.binaryType = "arraybuffer";
       setSocket(candidate);
       candidate.addEventListener("message", (event: MessageEvent) => {
         if (!isCurrent(candidate)) return;
+        if (event.data instanceof ArrayBuffer)
+          return tunnel.receive(new Uint8Array(event.data), (frame) => {
+            if (isCurrent(candidate)) candidate.send(frame);
+          });
         enqueue(() => {
           if (!isCurrent(candidate)) return Effect.void;
           const raw = typeof event.data === "string" ? event.data : "";
@@ -72,6 +91,7 @@ export class SupervisorLink {
         });
       });
       candidate.addEventListener("close", () => {
+        if (isCurrent(candidate)) tunnel.reset();
         if (isCurrent(candidate)) enqueue(() => consume({ kind: "closed", gen }));
       });
       candidate.addEventListener("error", () => {

@@ -2,10 +2,12 @@ import { Effect, Exit, Option, Schema, Stream } from "effect";
 import { Argument, Command } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { BunServices } from "@effect/platform-bun";
+import { KeyedPlace, placeCatalog } from "../../src/places/place.js";
 import { version } from "../../src/version.js";
 import {
   ChatGptStatus,
   ClaudeStatus,
+  PlaceKeyStatus,
   GitHubStatus,
   List,
   Polled,
@@ -220,6 +222,24 @@ export const saveGitHub = (api: Api) =>
     });
   });
 
+export const savePlaceKey = (api: Api, kind: typeof KeyedPlace.Type) =>
+  Effect.gen(function* () {
+    const { env, site } = placeCatalog[kind].key;
+    const piped = process.stdin.isTTY ? "" : (yield* readStdin).trim();
+    const key = piped === "" ? (process.env[env] ?? "").trim() : piped;
+    if (key === "")
+      return yield* failure(
+        "signin",
+        `No ${kind} API key: nothing was piped and ${env} is unset`,
+        `Make a key at ${site}, then: scotty login ${kind} < file`,
+        3,
+      );
+    return yield* api(`/api/credentials/${kind}`, PlaceKeyStatus, {
+      method: "POST",
+      body: { key },
+    });
+  });
+
 // oxlint-disable-next-line no-control-regex
 const ansi = /\u001b\[[0-9;?]*[A-Za-z]|\u001b\][^\u0007\u001b]*(\u0007|\u001b\\)/g;
 
@@ -342,10 +362,15 @@ const loginChatGpt = (api: Api) =>
 
 export { until };
 
-const loginTo = (account: "chatgpt" | "github" | "claude") =>
+const accounts = ["chatgpt", "github", "claude", ...KeyedPlace.literals] as const;
+const loginTo = (account: (typeof accounts)[number]) =>
   Effect.gen(function* () {
     const api = yield* withClient;
     if (account === "chatgpt") return yield* loginChatGpt(api);
+    if (account !== "github" && account !== "claude") {
+      const saved = yield* savePlaceKey(api, account);
+      return yield* output(saved, `${green("✓")} ${account} API key saved`);
+    }
     if (account === "claude") {
       const saved = yield* saveClaude(api);
       return yield* output(saved, `${green("✓")} Claude token saved${dim(until(saved.expiresAt))}`);
@@ -359,6 +384,6 @@ const loginTo = (account: "chatgpt" | "github" | "claude") =>
 
 export const login = Command.make(
   "login",
-  { account: Argument.Literals("account", ["chatgpt", "github", "claude"]) },
+  { account: Argument.Literals("account", accounts) },
   ({ account }) => loginTo(account),
 );

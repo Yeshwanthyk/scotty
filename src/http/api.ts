@@ -1,13 +1,13 @@
 import { PromptImages, promptFits } from "../../protocol/prompt.js";
 import { AgentDefaults, stageAgentDefaults } from "../session/agents/agent-settings.js";
-import { Config, Effect, Exit, Result, Schema, Stream } from "effect";
+import { Config, Effect, Exit, Option, Result, Schema, Stream } from "effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import type * as Cloudflare from "@alchemy.run/cloudflare";
 import { AgentKind } from "../session/events.js";
-import { PlaceKind, Size } from "../places/place.js";
+import { KeyedPlace, PlaceKind, placeCatalog, Size } from "../places/place.js";
 import { maxSearch, SearchQuery } from "../session/search.js";
 import { repoStats, StatsWindow } from "../session/stats.js";
 import {
@@ -217,6 +217,35 @@ export function apiHandler(
       );
       if (HttpServerResponse.isHttpServerResponse(body)) return body;
       return yield* HttpServerResponse.json(yield* credential.setClaude(body.token));
+    }
+    const keyed = Schema.decodeUnknownOption(KeyedPlace)(
+      /^\/api\/credentials\/([a-z]+)$/.exec(url.pathname)?.[1],
+    );
+    if (Option.isSome(keyed) && request.method === "GET")
+      return yield* HttpServerResponse.json(yield* credential.placeKeyStatus(keyed.value));
+    if (Option.isSome(keyed) && request.method === "POST") {
+      const kind = keyed.value;
+      const hint = `scotty login ${kind}`;
+      const body = yield* Schema.decodeUnknownEffect(
+        Schema.Struct({
+          key: Schema.String.check(Schema.isPattern(placeCatalog[kind].key.pattern)),
+        }),
+      )(yield* request.json).pipe(
+        Effect.catchTag("SchemaError", () =>
+          bad(`Expected a ${kind} API key from ${placeCatalog[kind].key.site}`, 400, hint),
+        ),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
+      const result = yield* credential.setPlaceKey(kind, body.key);
+      if (result.status === "refused")
+        return yield* bad(
+          result.httpStatus === 0
+            ? `${kind} could not be reached`
+            : `${kind} answered HTTP ${result.httpStatus}`,
+          result.httpStatus === 0 ? 502 : 400,
+          hint,
+        );
+      return yield* HttpServerResponse.json(result);
     }
     if (url.pathname === "/api/version" && request.method === "GET")
       return yield* HttpServerResponse.json({ version });

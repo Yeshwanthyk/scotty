@@ -1,10 +1,47 @@
-import { Schema } from "effect";
-import type { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
-export const PlaceKind = Schema.Literals(["cloudflare"]);
+export const PlaceKind = Schema.Literals(["cloudflare", "daytona"]);
 export const defaultPlace: typeof PlaceKind.Type = "cloudflare";
 export const Size = Schema.Literals(["standard-1", "standard-2", "standard-3", "standard-4"]);
 export const defaultSize: typeof Size.Type = "standard-1";
+
+/**
+ * What is fixed about each place: the sizes it makes, smallest first; whether the supervisor
+ * reaches the Worker through its own socket because the place can't intercept the machine's
+ * requests to `github.internal` and the rest; and, for a place that acts with the owner's API
+ * key, where `scotty login <place>` finds that key and what it looks like.
+ */
+export const placeCatalog = {
+  cloudflare: { sizes: Size.literals, tunnel: false },
+  daytona: {
+    sizes: ["standard-1", "standard-2"],
+    tunnel: true,
+    key: { env: "DAYTONA_API_KEY", pattern: /^dtn_[A-Za-z0-9_-]{20,200}$/, site: "app.daytona.io" },
+  },
+} as const satisfies Record<
+  typeof PlaceKind.Type,
+  {
+    readonly sizes: readonly (typeof Size.Type)[];
+    readonly tunnel: boolean;
+    readonly key?: { readonly env: string; readonly pattern: RegExp; readonly site: string };
+  }
+>;
+type Catalog = typeof placeCatalog;
+type WithKey = {
+  [K in keyof Catalog]: Catalog[K] extends { readonly key: object } ? K : never;
+}[keyof Catalog];
+/** The places with a `key` in the catalog. */
+export const KeyedPlace = Schema.Literals(["daytona"] as const satisfies readonly WithKey[]);
+
+/** The largest size `place` makes that is no bigger than `size`. */
+export const fitSize: (place: typeof PlaceKind.Type, size: typeof Size.Type) => typeof Size.Type = (
+  place,
+  size,
+) => {
+  const offered: readonly (typeof Size.Type)[] = placeCatalog[place].sizes;
+  const wanted = Size.literals.indexOf(size);
+  return offered.findLast((item) => Size.literals.indexOf(item) <= wanted) ?? offered[0] ?? size;
+};
 
 export const ratesDated = "2026-10-05";
 export const sizeSpec: Record<
@@ -27,8 +64,57 @@ export const hourlyRate: (size: typeof Size.Type) => number = (size) => {
 };
 
 export class PlaceFailed extends Schema.TaggedError<PlaceFailed>()("PlaceFailed", {
-  op: Schema.Literals(["create", "pause", "resume", "remove", "status", "watch"]),
+  op: Schema.Literals(["create", "pause", "resume", "remove", "status", "watch", "port"]),
 }) {}
+
+export class PortFailed extends Schema.TaggedError<PortFailed>()("PortFailed", {}) {}
+
+const acceptSocket = (response: object) => {
+  const candidate: unknown = Reflect.get(response, "webSocket");
+  if (
+    !(candidate instanceof WebSocket) ||
+    !("accept" in candidate) ||
+    typeof candidate.accept !== "function"
+  ) {
+    const body: unknown = Reflect.get(response, "body");
+    if (body instanceof ReadableStream) body.cancel().catch(() => undefined);
+    return undefined;
+  }
+  candidate.accept();
+  return candidate;
+};
+
+/**
+ * What a `fetch` with `Upgrade: websocket` answered: its status, and its WebSocket, accepted, unless
+ * the far end refused the upgrade. Interrupted before the answer, it closes the socket when it opens.
+ */
+export const upgrade: (
+  open: () => Promise<object>,
+) => Effect.Effect<
+  { readonly status: number; readonly socket: WebSocket | undefined },
+  PortFailed
+> = (open) =>
+  Effect.callback((resume) => {
+    let interrupted = false;
+    open().then(
+      (response) => {
+        try {
+          const socket = acceptSocket(response);
+          const status: unknown = Reflect.get(response, "status");
+          if (interrupted) socket?.close();
+          else resume(Effect.succeed({ status: typeof status === "number" ? status : 0, socket }));
+        } catch {
+          if (!interrupted) resume(Effect.fail(new PortFailed()));
+        }
+      },
+      () => {
+        if (!interrupted) resume(Effect.fail(new PortFailed()));
+      },
+    );
+    return Effect.sync(() => {
+      interrupted = true;
+    });
+  });
 
 /** Names one machine (container, sandbox or VM) at a place. Not a secret. */
 export type Handle = string;
@@ -56,16 +142,12 @@ export interface Port {
       readonly body?: ArrayBuffer | ReadableStream<Uint8Array> | null;
       readonly redirect?: "manual";
     },
-  ) => Promise<PortResponse>;
-  /**
-   * Opens a WebSocket to `url`, accepted and ready to use, or undefined when the far end refused
-   * the upgrade. A socket that opens after `signal` aborts is closed.
-   */
+  ) => Effect.Effect<PortResponse, PortFailed>;
+  /** A WebSocket to `url`, as `upgrade` answers it. */
   readonly socket: (
     url: string,
     headers: Record<string, string>,
-    signal: AbortSignal,
-  ) => Promise<WebSocket | undefined>;
+  ) => Effect.Effect<WebSocket | undefined, PortFailed>;
 }
 
 /** How a watched machine ended, or `lost` when the watch broke and says nothing about it. */
@@ -80,8 +162,8 @@ export type Exit =
  */
 export interface Place {
   /**
-   * Makes the machine for this session and generation, with the session's egress and the
-   * supervisor's key `key` (hex). Idempotent by session and gen: a retried create gets the
+   * Makes the machine for this session and generation, running and with the supervisor's key
+   * `key` (hex). Idempotent by session and gen: a retried create gets the
    * same handle back, and a new gen never gets a machine already reported gone.
    */
   readonly create: (input: {
@@ -98,7 +180,7 @@ export interface Place {
   readonly remove: (handle: Handle) => Effect.Effect<void, PlaceFailed>;
   readonly status: (handle: Handle) => Effect.Effect<"running" | "paused" | "gone", PlaceFailed>;
   /** HTTP and WebSocket to a port inside the machine: supervisor, saves, terminal, hatch. */
-  readonly port: (handle: Handle, port: number) => Port;
+  readonly port: (handle: Handle, port: number) => Effect.Effect<Port, PlaceFailed>;
   /**
    * Only where the place reports an exit as it happens. The outer effect arms the watch (it fails
    * when the machine can't be watched yet); the inner one waits for the exit.
