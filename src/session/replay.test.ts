@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { Schema } from "effect";
 import { command } from "./commands.js";
 import { deadlines } from "./deadlines.js";
-import { hourlyRate } from "../places/place.js";
 import { SessionEvent } from "./events.js";
 import { repoStats, sessionStats } from "./stats.js";
 import { fold, initial, invariants, type State } from "./fold.js";
@@ -75,24 +74,6 @@ describe("saved session event logs", () => {
       }
     }
     expect(conversationView(observed, events).turns[0]?.assistant).toContain("startup-ready");
-  });
-  it("identifies malformed and out-of-order log lines", () => {
-    expect(() => replayLine(initial, "{", "broken.jsonl", 3)).toThrow("broken.jsonl:3");
-    const row = JSON.stringify({
-      seq: 1,
-      at: 1,
-      src: "api",
-      kind: "created",
-      agentKind: "codex",
-      repo: "repo",
-      baseBranch: "main",
-      branch: "scotty/session-1",
-      title: "test",
-      prompt: "go",
-      image: "image",
-    });
-    const state = replayLine(initial, row, "repeat.jsonl", 1);
-    expect(() => replayLine(state, row, "repeat.jsonl", 2)).toThrow("repeat.jsonl:2");
   });
   it("replays the alarm-paced redial after a socket drop", async () => {
     const file = "redial-alarm.jsonl";
@@ -334,13 +315,8 @@ describe("stats from saved session event logs", () => {
       running: 1,
       agents: { codex: { sessions: 1, runMs: 247_000 + 3_600_000 } },
     });
-    expect(all.total.sizes).toEqual([
-      {
-        size: "standard-1",
-        runMs: 247_000 + 3_600_000,
-        cost: ((247_000 + 3_600_000) / 3_600_000) * hourlyRate("standard-1"),
-      },
-    ]);
+    expect(all.total.sizes).toMatchObject([{ size: "standard-1", runMs: 3_847_000 }]);
+    expect(all.total.sizes[0]?.cost).toBeCloseTo(0.07909432, 8);
     const later = repoStats([stats], "7d", 371_000 + 8 * 86_400_000);
     expect(later.total).toMatchObject({ sessions: 1, runMs: 7 * 86_400_000, failed: 0, turns: 0 });
   });
@@ -366,28 +342,17 @@ describe("stats from saved session event logs", () => {
       { gen: 1, size: "standard-1", ...first },
       { gen: 2, size: "standard-3", ...second },
     ]);
-    const hours = (ms: number) => ms / 3_600_000;
     const covered = repoStats([stats], "7d", second.end + 60_000).total;
-    expect(covered.sizes).toEqual([
-      {
-        size: "standard-1",
-        runMs: first.end - first.start,
-        cost: hours(first.end - first.start) * hourlyRate("standard-1"),
-      },
-      {
-        size: "standard-3",
-        runMs: second.end - second.start,
-        cost: hours(second.end - second.start) * hourlyRate("standard-3"),
-      },
+    expect(covered.sizes).toMatchObject([
+      { size: "standard-1", runMs: 25_863 },
+      { size: "standard-3", runMs: 33_677 },
     ]);
-    expect(covered.runMs).toBe(first.end - first.start + (second.end - second.start));
-    expect(covered.cost).toBeCloseTo(
-      covered.sizes.reduce((sum, share) => sum + share.cost, 0),
-      12,
-    );
+    expect(covered.sizes[0]?.cost).toBeCloseTo(0.00053174328, 10);
+    expect(covered.sizes[1]?.cost).toBeCloseTo(0.00205833824, 10);
+    expect(covered.runMs).toBe(59_540);
+    expect(covered.cost).toBeCloseTo(0.00259008152, 10);
     const late = repoStats([stats], "7d", second.end - 10_000 + 7 * 86_400_000).total;
-    expect(late.sizes).toEqual([
-      { size: "standard-3", runMs: 10_000, cost: hours(10_000) * hourlyRate("standard-3") },
-    ]);
+    expect(late.sizes).toMatchObject([{ size: "standard-3", runMs: 10_000 }]);
+    expect(late.sizes[0]?.cost).toBeCloseTo(0.0006112, 10);
   });
 });

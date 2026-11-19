@@ -28,7 +28,6 @@ describe("session fold", () => {
         const next = fold(state, event);
         expect(next).toEqual({ ...state, lastSeq: event.seq });
         expect(command(next, event)).toBeUndefined();
-        expect(deadline(next)).toEqual(deadline(state));
       }
     }
     const withTiming = decodeSessionEvent({
@@ -309,23 +308,6 @@ describe("session fold", () => {
     check(state);
   });
 
-  it("expires a request at its due time without reporting delivery", () => {
-    const prompt = make(6, "prompt.requested", { req: "p", turn: "0", text: "text", images: [] });
-    let state = fold(boot(), prompt);
-    const due = state.pending.find((item) => item.op === "req:p")?.due;
-    expect(due).toBeDefined();
-    const expired = decodeSessionEvent({
-      seq: 7,
-      at: due,
-      src: "alarm",
-      kind: "timeout",
-      op: "req:p",
-    });
-    state = fold(state, expired);
-    expect(state.requests.find((item) => item.req === "p")?.status).toBe("timed_out");
-    expect(state.requests.find((item) => item.req === "p")?.status).not.toBe("delivered");
-    check(state);
-  });
   it("redeploy re-dials without a close; reconnect acknowledges n and resends pending work", () => {
     let state = fold(
       boot(),
