@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import { boatDeploy } from "./boat.ts";
 import { daytonaDeploy } from "./daytona.ts";
 
 /**
@@ -23,7 +24,7 @@ export interface PlaceDeploy {
   ) => Effect.Effect<readonly string[], { readonly message: string }>;
 }
 
-const placeDeploys: readonly PlaceDeploy[] = [daytonaDeploy];
+const placeDeploys: readonly PlaceDeploy[] = [daytonaDeploy, boatDeploy];
 
 /** The place steps whose key the deploying shell holds, each with that key. */
 export const keyedDeploys = () =>

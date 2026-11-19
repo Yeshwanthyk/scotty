@@ -1,5 +1,6 @@
 import type * as cf from "@cloudflare/workers-types";
 import type { Effect } from "effect";
+import { boatPlace, checkBoatKey } from "./boat.js";
 import { cloudflarePlace } from "./cloudflare.js";
 import { checkDaytonaKey, daytonaPlace } from "./daytona.js";
 import type { KeyedPlace, Place, PlaceFailed, PlaceKind } from "./place.js";
@@ -18,6 +19,10 @@ const modules = {
     make: (input: PlaceInput) =>
       daytonaPlace({ key: (op) => input.key("daytona", op), env: input.env }),
     checkKey: checkDaytonaKey,
+  },
+  boat: {
+    make: (input: PlaceInput) => boatPlace({ key: (op) => input.key("boat", op), env: input.env }),
+    checkKey: checkBoatKey,
   },
 } satisfies Record<
   typeof PlaceKind.Type,
