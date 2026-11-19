@@ -8,3 +8,4 @@
 
 # Imports of the owner's real agent sessions (private; never committed)
 ui/seed/local/
+.runtime/
